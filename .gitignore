@@ -1,0 +1,26 @@
+# Виртуальное окружение
+venv/
+env/
+
+# База данных (локально)
+places.db
+*.db
+
+# Переменные окружения (НЕ коммитим)
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# IDE
+.vscode/
+.idea/
+
+# Логи
+*.log
+
+# macOS
+.DS_Store
