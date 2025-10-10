@@ -4117,12 +4117,12 @@ async def process_tips_date(message: Message, state: FSMContext):
     )
     
     # Добавляем мотивационное сообщение
-    motivation = get_motivation_message(total)
+    motivation = get_motivation_message(tips_total)
     if motivation:
         result_message += f"\n\n{motivation}"
     
-    # Рассчитываем и показываем распределение
-    distribution = calculate_tips_distribution(total)
+    # Рассчитываем и показываем распределение только для чаевых
+    distribution = calculate_tips_distribution(tips_total)
     result_message += f"\n\n{format_distribution(distribution)}"
     
     await state.clear()
@@ -4258,10 +4258,10 @@ async def show_month_statistics(callback: CallbackQuery):
         f"📈 Среднее за смену: {stats['avg_tips']:,.0f} ₽"
     )
     
-    # Добавляем суммарное распределение за месяц
-    total_tips = stats['total_tips']
-    if total_tips > 0:
-        distribution = calculate_tips_distribution(total_tips)
+    # Добавляем суммарное распределение за месяц (только для чаевых, без ставки)
+    tips_only = (stats.get('total_card', 0) or 0) + (stats.get('total_netmonet', 0) or 0) + (stats.get('total_cash', 0) or 0)
+    if tips_only > 0:
+        distribution = calculate_tips_distribution(tips_only)
         text += f"\n\n{format_distribution(distribution)}"
     
     await callback.message.answer(text, parse_mode=ParseMode.HTML)
