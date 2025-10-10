@@ -1,13 +1,22 @@
 import aiosqlite
 import logging
+import os
 from datetime import datetime
 from typing import Optional
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 class Database:
     def __init__(self, db_path='places.db'):
-        self.db_path = db_path
+        # Если есть Volume в Railway, используем его
+        volume_path = Path('/app/data')
+        if volume_path.exists() and volume_path.is_dir():
+            self.db_path = str(volume_path / 'places.db')
+            logger.info(f"📦 Используем персистентное хранилище: {self.db_path}")
+        else:
+            self.db_path = db_path
+            logger.info(f"💾 Используем локальную базу: {self.db_path}")
         self._connection: Optional[aiosqlite.Connection] = None
     
     async def connect(self):
