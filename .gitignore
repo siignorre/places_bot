@@ -9,6 +9,9 @@ places.db
 # Переменные окружения (НЕ коммитим)
 .env
 
+# Google Sheets credentials
+credentials.json
+
 # Python
 __pycache__/
 *.py[cod]
@@ -21,6 +24,10 @@ __pycache__/
 
 # Логи
 *.log
+bot.log
+
+# Lockfile
+.bot.lock
 
 # macOS
 .DS_Store
