@@ -644,7 +644,7 @@ def get_status_keyboard():
 async def command_start_handler(message: Message):
     """Обработчик команды /start"""
     await message.answer(
-        f"Салют! Куда пойдем? 🗺",
+        f"ну что, изменим жизнь?",
         reply_markup=get_main_menu()
     )
 
@@ -894,43 +894,77 @@ async def process_note_text(message: Message, state: FSMContext):
 
 @router.message(F.text == "📋 Мои заметки")
 async def show_my_notes(message: Message):
-    """Показать список заметок"""
-    user_id = message.from_user.id
-    notes = await db.get_user_notes(user_id, limit=NOTES_PER_PAGE)
-    total_count = await db.count_user_notes(user_id)
+    """Показать выбор категорий заметок"""
+    keyboard = [
+        [InlineKeyboardButton(text="💡 Идея", callback_data="notes_cat_Идея"), InlineKeyboardButton(text="✅ Задача", callback_data="notes_cat_Задача")],
+        [InlineKeyboardButton(text="📌 Важное", callback_data="notes_cat_Важное"), InlineKeyboardButton(text="💭 Мысль", callback_data="notes_cat_Мысль")],
+        [InlineKeyboardButton(text="🔄 Показать все", callback_data="notes_show_all")],
+        [InlineKeyboardButton(text="◀️ Назад", callback_data="notes_back_main")]
+    ]
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    await message.answer(
+        "Выберите категорию заметок:",
+        reply_markup=markup
+    )
+
+@router.callback_query(F.data.startswith("notes_cat_"))
+async def show_notes_by_category(callback: CallbackQuery):
+    """Показать заметки выбранной категории"""
+    category = callback.data.replace("notes_cat_", "")
+    user_id = callback.from_user.id
+    notes = await db.get_user_notes(user_id, category=category)
     
     if not notes:
-        await message.answer(
-            "📋 У вас пока нет заметок.",
-            reply_markup=get_notes_submenu()
+        await callback.message.edit_text(
+            f"Нет заметок в категории: {category}"
         )
+        await callback.answer()
         return
     
-    # Показываем каждую заметку с кнопками
+    texts = []
     for note in notes:
         note_date = format_date(note['created_at'])
-        text = f"📝 <b>{note['category']}</b> ({note_date})\n\n{note['text']}"
-        
-        keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"edit_note_{note['id']}"),
-                InlineKeyboardButton(text=EMOJI_DELETE, callback_data=f"delete_note_{note['id']}")
-            ]
-        ])
-        
-        await message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.HTML)
+        texts.append(f"📝 <b>{note['category']}</b> ({note_date})\n\n{note['text']}")
+    body = "\n\n".join(texts)
     
-    # Сообщение о количестве
-    if total_count > NOTES_PER_PAGE:
-        await message.answer(
-            f"📊 Показано {len(notes)} из {total_count} заметок",
-            reply_markup=get_notes_submenu()
-        )
-    else:
-        await message.answer(
-            f"📊 Всего заметок: {total_count}",
-            reply_markup=get_notes_submenu()
-        )
+    keyboard = [[InlineKeyboardButton(text="◀️ Назад", callback_data="notes_back_menu")], [InlineKeyboardButton(text="🔄 Показать все", callback_data="notes_show_all")]]
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    await callback.message.edit_text(body, reply_markup=markup, parse_mode=ParseMode.HTML)
+    await callback.answer()
+
+@router.callback_query(F.data == "notes_show_all")
+async def show_all_notes(callback: CallbackQuery):
+    """Показать все заметки"""
+    user_id = callback.from_user.id
+    notes = await db.get_user_notes(user_id)
+    
+    if not notes:
+        await callback.message.edit_text("У вас пока нет заметок.")
+        await callback.answer()
+        return
+    
+    texts = []
+    for note in notes:
+        note_date = format_date(note['created_at'])
+        texts.append(f"📝 <b>{note['category']}</b> ({note_date})\n\n{note['text']}")
+    body = "\n\n".join(texts)
+    
+    keyboard = [[InlineKeyboardButton(text="◀️ Назад", callback_data="notes_back_menu")]]
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    await callback.message.edit_text(body, reply_markup=markup, parse_mode=ParseMode.HTML)
+    await callback.answer()
+
+@router.callback_query(F.data.in_({"notes_back_menu", "notes_back_main"}))
+async def notes_back(callback: CallbackQuery):
+    """Вернуться к выбору категорий заметок"""
+    keyboard = [
+        [InlineKeyboardButton(text="💡 Идея", callback_data="notes_cat_Идея"), InlineKeyboardButton(text="✅ Задача", callback_data="notes_cat_Задача")],
+        [InlineKeyboardButton(text="📌 Важное", callback_data="notes_cat_Важное"), InlineKeyboardButton(text="💭 Мысль", callback_data="notes_cat_Мысль")],
+        [InlineKeyboardButton(text="🔄 Показать все", callback_data="notes_show_all")]
+    ]
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    await callback.message.edit_text("Выберите категорию заметок:", reply_markup=markup)
+    await callback.answer()
 
 @router.callback_query(F.data.startswith("edit_note_"))
 async def edit_note_callback(callback: CallbackQuery, state: FSMContext):
@@ -4972,37 +5006,33 @@ async def process_new_wish_link(message: Message, state: FSMContext):
 
 @router.message(F.text == "🏷 Фильтры")
 async def show_wishlist_filters(message: Message):
-    """Показать фильтры вишлиста"""
-    keyboard = [
-        [InlineKeyboardButton(text="📏 По размеру покупки", callback_data="filter_by_size")],
-        [InlineKeyboardButton(text="🏷 По типу покупки", callback_data="filter_by_type")],
-        [InlineKeyboardButton(text="⭐️ По приоритету", callback_data="filter_by_priority")],
-        [InlineKeyboardButton(text="🔄 Показать всё", callback_data="filter_show_all")]
-    ]
-    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    
-    await message.answer(
-        "🏷 <b>Фильтры вишлиста</b>\n\n"
-        "Выберите, как отфильтровать ваш вишлист:",
-        reply_markup=markup,
-        parse_mode=ParseMode.HTML
-    )
-
-@router.callback_query(F.data == "filter_by_size")
-async def filter_by_size(callback: CallbackQuery):
-    """Фильтр по размеру покупки"""
+    """Показать фильтры вишлиста (категории как в меню добавления)"""
     keyboard = []
+    # Категории по типу покупки
+    for cat in WISHLIST_TYPE_CATEGORIES:
+        keyboard.append([InlineKeyboardButton(text=cat, callback_data=f"filter_type_{cat}")])
+    # Категории по размеру покупки
     for cat in WISHLIST_SIZE_CATEGORIES:
         keyboard.append([InlineKeyboardButton(text=cat, callback_data=f"filter_size_{cat}")])
-    keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_filters")])
+    keyboard.append([InlineKeyboardButton(text="🔄 Показать всё", callback_data="filter_show_all")])
     
     markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    
-    await callback.message.edit_text(
-        "📏 <b>Выберите размер покупки:</b>",
-        reply_markup=markup,
-        parse_mode=ParseMode.HTML
+    await message.answer(
+        "Выберите категорию вишлиста:",
+        reply_markup=markup
     )
+
+@router.callback_query(F.data == "back_to_filters")
+async def back_to_filters(callback: CallbackQuery):
+    """Вернуться к меню фильтров (категории)"""
+    keyboard = []
+    for cat in WISHLIST_TYPE_CATEGORIES:
+        keyboard.append([InlineKeyboardButton(text=cat, callback_data=f"filter_type_{cat}")])
+    for cat in WISHLIST_SIZE_CATEGORIES:
+        keyboard.append([InlineKeyboardButton(text=cat, callback_data=f"filter_size_{cat}")])
+    keyboard.append([InlineKeyboardButton(text="🔄 Показать всё", callback_data="filter_show_all")])
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    await callback.message.edit_text("Выберите категорию вишлиста:", reply_markup=markup)
     await callback.answer()
 
 @router.callback_query(F.data.startswith("filter_size_"))
@@ -5036,22 +5066,7 @@ async def show_filtered_by_size(callback: CallbackQuery):
     await callback.message.edit_text(text, reply_markup=markup, parse_mode=ParseMode.HTML)
     await callback.answer()
 
-@router.callback_query(F.data == "filter_by_type")
-async def filter_by_type(callback: CallbackQuery):
-    """Фильтр по типу покупки"""
-    keyboard = []
-    for cat in WISHLIST_TYPE_CATEGORIES:
-        keyboard.append([InlineKeyboardButton(text=cat, callback_data=f"filter_type_{cat}")])
-    keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_filters")])
-    
-    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    
-    await callback.message.edit_text(
-        "🏷 <b>Выберите тип покупки:</b>",
-        reply_markup=markup,
-        parse_mode=ParseMode.HTML
-    )
-    await callback.answer()
+# Удаляем промежуточное меню типов/размеров — фильтрация сразу по категориям
 
 @router.callback_query(F.data.startswith("filter_type_"))
 async def show_filtered_by_type(callback: CallbackQuery):
