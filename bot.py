@@ -196,6 +196,17 @@ class AddWishlistStates(StatesGroup):
     waiting_for_photo = State()
     waiting_for_link = State()
 
+# FSM состояния для редактирования вишлиста
+class EditWishlistStates(StatesGroup):
+    waiting_for_field_choice = State()
+    waiting_for_new_name = State()
+    waiting_for_new_size_category = State()
+    waiting_for_new_type_category = State()
+    waiting_for_new_price = State()
+    waiting_for_new_priority = State()
+    waiting_for_new_photo = State()
+    waiting_for_new_link = State()
+
 # Временное хранилище данных о месте
 user_place_data = {}
 
@@ -373,7 +384,8 @@ def get_wishlist_submenu():
     keyboard = ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="➕ Добавить желание")],
-            [KeyboardButton(text="📋 Мой вишлист")],
+            [KeyboardButton(text="📋 Мой вишлист"), KeyboardButton(text="🏷 Фильтры")],
+            [KeyboardButton(text="✏️ Редактировать желания")],
             [KeyboardButton(text="◀️ К личному")],
         ],
         resize_keyboard=True
@@ -4515,6 +4527,666 @@ async def show_my_wishlist(message: Message):
     text += f"\n📊 Всего желаний: {len(items)}"
     
     await message.answer(text, reply_markup=get_wishlist_submenu(), parse_mode=ParseMode.HTML)
+
+@router.message(F.text == "✏️ Редактировать желания")
+async def edit_wishlist_start(message: Message):
+    """Показать список желаний для редактирования"""
+    user_id = message.from_user.id
+    items = await db.get_user_wishlist(user_id)
+    
+    if not items:
+        await message.answer(
+            "📋 Ваш вишлист пуст.\n\n"
+            "Добавьте первое желание через «➕ Добавить желание»",
+            reply_markup=get_wishlist_submenu()
+        )
+        return
+    
+    # Создаём inline клавиатуру со списком желаний
+    keyboard = []
+    for item in items:
+        button_text = f"{item['name']}"
+        if item.get('price'):
+            button_text += f" ({item['price']:,.0f} ₽)"
+        keyboard.append([InlineKeyboardButton(
+            text=button_text,
+            callback_data=f"edit_wish_{item['id']}"
+        )])
+    
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    
+    await message.answer(
+        "✏️ <b>Выберите желание для редактирования:</b>",
+        reply_markup=markup,
+        parse_mode=ParseMode.HTML
+    )
+
+@router.callback_query(F.data.startswith("edit_wish_"))
+async def show_wish_actions(callback: CallbackQuery, state: FSMContext):
+    """Показать действия для выбранного желания"""
+    item_id = int(callback.data.split("_")[2])
+    user_id = callback.from_user.id
+    
+    item = await db.get_wishlist_item(item_id, user_id)
+    if not item:
+        await callback.answer("❌ Желание не найдено")
+        return
+    
+    # Сохраняем ID в состояние
+    await state.update_data(editing_item_id=item_id)
+    
+    # Формируем информацию о желании
+    text = f"📦 <b>{item['name']}</b>\n\n"
+    text += f"📏 Размер: {item['size_category']}\n"
+    text += f"🏷 Тип: {item['type_category']}\n"
+    
+    if item.get('price'):
+        text += f"💰 Цена: {item['price']:,.0f} ₽\n"
+    
+    if item.get('priority'):
+        text += f"⭐️ Приоритет: {item['priority']}\n"
+    
+    if item.get('link'):
+        text += f"🔗 Ссылка: {item['link']}\n"
+    
+    text += "\n<b>Выберите действие:</b>"
+    
+    # Клавиатура с действиями
+    keyboard = [
+        [InlineKeyboardButton(text="✏️ Изменить название", callback_data=f"editfield_name_{item_id}")],
+        [InlineKeyboardButton(text="📏 Изменить размер", callback_data=f"editfield_size_{item_id}")],
+        [InlineKeyboardButton(text="🏷 Изменить тип", callback_data=f"editfield_type_{item_id}")],
+        [InlineKeyboardButton(text="💰 Изменить цену", callback_data=f"editfield_price_{item_id}")],
+        [InlineKeyboardButton(text="⭐️ Изменить приоритет", callback_data=f"editfield_priority_{item_id}")],
+        [InlineKeyboardButton(text="📸 Изменить фото", callback_data=f"editfield_photo_{item_id}")],
+        [InlineKeyboardButton(text="🔗 Изменить ссылку", callback_data=f"editfield_link_{item_id}")],
+        [InlineKeyboardButton(text="🗑 Удалить желание", callback_data=f"delete_wish_{item_id}")],
+        [InlineKeyboardButton(text="◀️ Назад к списку", callback_data="back_to_wishlist")]
+    ]
+    
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    
+    # Если есть фото, отправляем с фото
+    if item.get('photo_url'):
+        try:
+            await callback.message.delete()
+            await callback.message.answer_photo(
+                photo=item['photo_url'],
+                caption=text,
+                reply_markup=markup,
+                parse_mode=ParseMode.HTML
+            )
+        except:
+            await callback.message.edit_text(text, reply_markup=markup, parse_mode=ParseMode.HTML)
+    else:
+        await callback.message.edit_text(text, reply_markup=markup, parse_mode=ParseMode.HTML)
+    
+    await callback.answer()
+
+@router.callback_query(F.data == "back_to_wishlist")
+async def back_to_wishlist_list(callback: CallbackQuery, state: FSMContext):
+    """Вернуться к списку желаний"""
+    await state.clear()
+    user_id = callback.from_user.id
+    items = await db.get_user_wishlist(user_id)
+    
+    if not items:
+        await callback.message.edit_text(
+            "📋 Ваш вишлист пуст."
+        )
+        return
+    
+    # Создаём inline клавиатуру со списком желаний
+    keyboard = []
+    for item in items:
+        button_text = f"{item['name']}"
+        if item.get('price'):
+            button_text += f" ({item['price']:,.0f} ₽)"
+        keyboard.append([InlineKeyboardButton(
+            text=button_text,
+            callback_data=f"edit_wish_{item['id']}"
+        )])
+    
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    
+    await callback.message.edit_text(
+        "✏️ <b>Выберите желание для редактирования:</b>",
+        reply_markup=markup,
+        parse_mode=ParseMode.HTML
+    )
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("delete_wish_"))
+async def delete_wishlist_item(callback: CallbackQuery, state: FSMContext):
+    """Удалить желание из вишлиста"""
+    item_id = int(callback.data.split("_")[2])
+    user_id = callback.from_user.id
+    
+    # Получаем информацию о желании для подтверждения
+    item = await db.get_wishlist_item(item_id, user_id)
+    if not item:
+        await callback.answer("❌ Желание не найдено")
+        return
+    
+    # Создаём клавиатуру подтверждения
+    keyboard = [
+        [InlineKeyboardButton(text="✅ Да, удалить", callback_data=f"confirm_delete_wish_{item_id}")],
+        [InlineKeyboardButton(text="❌ Отмена", callback_data=f"edit_wish_{item_id}")]
+    ]
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    
+    await callback.message.edit_text(
+        f"🗑 <b>Удалить желание?</b>\n\n"
+        f"📦 {item['name']}\n\n"
+        f"Это действие нельзя отменить.",
+        reply_markup=markup,
+        parse_mode=ParseMode.HTML
+    )
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("confirm_delete_wish_"))
+async def confirm_delete_wishlist_item(callback: CallbackQuery, state: FSMContext):
+    """Подтверждение удаления желания"""
+    item_id = int(callback.data.split("_")[3])
+    user_id = callback.from_user.id
+    
+    success = await db.delete_wishlist_item(item_id, user_id)
+    
+    if success:
+        await state.clear()
+        await callback.message.edit_text(
+            "✅ Желание успешно удалено из вишлиста"
+        )
+        await callback.answer("Удалено!")
+    else:
+        await callback.answer("❌ Ошибка при удалении")
+
+# Обработчики редактирования полей
+
+@router.callback_query(F.data.startswith("editfield_name_"))
+async def edit_wish_name(callback: CallbackQuery, state: FSMContext):
+    """Начать редактирование названия"""
+    item_id = int(callback.data.split("_")[2])
+    await state.update_data(editing_item_id=item_id)
+    await state.set_state(EditWishlistStates.waiting_for_new_name)
+    
+    await callback.message.edit_text(
+        "✏️ <b>Введите новое название желания:</b>",
+        parse_mode=ParseMode.HTML
+    )
+    await callback.answer()
+
+@router.message(EditWishlistStates.waiting_for_new_name)
+async def process_new_wish_name(message: Message, state: FSMContext):
+    """Сохранить новое название"""
+    data = await state.get_data()
+    item_id = data.get('editing_item_id')
+    user_id = message.from_user.id
+    
+    success = await db.update_wishlist_item(item_id, user_id, name=message.text)
+    
+    if success:
+        await message.answer("✅ Название обновлено!", reply_markup=get_wishlist_submenu())
+        await state.clear()
+    else:
+        await message.answer("❌ Ошибка при обновлении", reply_markup=get_wishlist_submenu())
+
+@router.callback_query(F.data.startswith("editfield_size_"))
+async def edit_wish_size(callback: CallbackQuery, state: FSMContext):
+    """Начать редактирование размера"""
+    item_id = int(callback.data.split("_")[2])
+    await state.update_data(editing_item_id=item_id)
+    await state.set_state(EditWishlistStates.waiting_for_new_size_category)
+    
+    await callback.message.answer(
+        "📏 <b>Выберите новый размер покупки:</b>",
+        reply_markup=get_wishlist_size_keyboard(),
+        parse_mode=ParseMode.HTML
+    )
+    await callback.message.delete()
+    await callback.answer()
+
+@router.message(EditWishlistStates.waiting_for_new_size_category)
+async def process_new_wish_size(message: Message, state: FSMContext):
+    """Сохранить новый размер"""
+    if message.text == EMOJI_CANCEL:
+        await state.clear()
+        await message.answer("Отменено", reply_markup=get_wishlist_submenu())
+        return
+    
+    if message.text not in WISHLIST_SIZE_CATEGORIES:
+        await message.answer("❌ Выберите размер из списка:")
+        return
+    
+    data = await state.get_data()
+    item_id = data.get('editing_item_id')
+    user_id = message.from_user.id
+    
+    success = await db.update_wishlist_item(item_id, user_id, size_category=message.text)
+    
+    if success:
+        await message.answer("✅ Размер обновлен!", reply_markup=get_wishlist_submenu())
+        await state.clear()
+    else:
+        await message.answer("❌ Ошибка при обновлении", reply_markup=get_wishlist_submenu())
+
+@router.callback_query(F.data.startswith("editfield_type_"))
+async def edit_wish_type(callback: CallbackQuery, state: FSMContext):
+    """Начать редактирование типа"""
+    item_id = int(callback.data.split("_")[2])
+    await state.update_data(editing_item_id=item_id)
+    await state.set_state(EditWishlistStates.waiting_for_new_type_category)
+    
+    await callback.message.answer(
+        "🏷 <b>Выберите новый тип покупки:</b>",
+        reply_markup=get_wishlist_type_keyboard(),
+        parse_mode=ParseMode.HTML
+    )
+    await callback.message.delete()
+    await callback.answer()
+
+@router.message(EditWishlistStates.waiting_for_new_type_category)
+async def process_new_wish_type(message: Message, state: FSMContext):
+    """Сохранить новый тип"""
+    if message.text == EMOJI_CANCEL:
+        await state.clear()
+        await message.answer("Отменено", reply_markup=get_wishlist_submenu())
+        return
+    
+    if message.text not in WISHLIST_TYPE_CATEGORIES:
+        await message.answer("❌ Выберите тип из списка:")
+        return
+    
+    data = await state.get_data()
+    item_id = data.get('editing_item_id')
+    user_id = message.from_user.id
+    
+    success = await db.update_wishlist_item(item_id, user_id, type_category=message.text)
+    
+    if success:
+        await message.answer("✅ Тип обновлен!", reply_markup=get_wishlist_submenu())
+        await state.clear()
+    else:
+        await message.answer("❌ Ошибка при обновлении", reply_markup=get_wishlist_submenu())
+
+@router.callback_query(F.data.startswith("editfield_price_"))
+async def edit_wish_price(callback: CallbackQuery, state: FSMContext):
+    """Начать редактирование цены"""
+    item_id = int(callback.data.split("_")[2])
+    await state.update_data(editing_item_id=item_id)
+    await state.set_state(EditWishlistStates.waiting_for_new_price)
+    
+    await callback.message.edit_text(
+        "💰 <b>Введите новую цену (в рублях):</b>\n\n"
+        "Или отправьте '0' чтобы удалить цену",
+        parse_mode=ParseMode.HTML
+    )
+    await callback.answer()
+
+@router.message(EditWishlistStates.waiting_for_new_price)
+async def process_new_wish_price(message: Message, state: FSMContext):
+    """Сохранить новую цену"""
+    try:
+        price = float(message.text.replace(',', '.').replace(' ', ''))
+        
+        data = await state.get_data()
+        item_id = data.get('editing_item_id')
+        user_id = message.from_user.id
+        
+        # Если цена 0, удаляем её (сохраняем NULL)
+        price_value = None if price == 0 else price
+        
+        success = await db.update_wishlist_item(item_id, user_id, price=price_value)
+        
+        if success:
+            if price_value:
+                await message.answer(f"✅ Цена обновлена: {price_value:,.0f} ₽", reply_markup=get_wishlist_submenu())
+            else:
+                await message.answer("✅ Цена удалена", reply_markup=get_wishlist_submenu())
+            await state.clear()
+        else:
+            await message.answer("❌ Ошибка при обновлении", reply_markup=get_wishlist_submenu())
+    except ValueError:
+        await message.answer("❌ Введите корректное число:")
+
+@router.callback_query(F.data.startswith("editfield_priority_"))
+async def edit_wish_priority(callback: CallbackQuery, state: FSMContext):
+    """Начать редактирование приоритета"""
+    item_id = int(callback.data.split("_")[2])
+    await state.update_data(editing_item_id=item_id)
+    await state.set_state(EditWishlistStates.waiting_for_new_priority)
+    
+    await callback.message.answer(
+        "⭐️ <b>Выберите новый приоритет:</b>",
+        reply_markup=get_wishlist_priority_keyboard(),
+        parse_mode=ParseMode.HTML
+    )
+    await callback.message.delete()
+    await callback.answer()
+
+@router.message(EditWishlistStates.waiting_for_new_priority)
+async def process_new_wish_priority(message: Message, state: FSMContext):
+    """Сохранить новый приоритет"""
+    if message.text == EMOJI_CANCEL:
+        await state.clear()
+        await message.answer("Отменено", reply_markup=get_wishlist_submenu())
+        return
+    
+    if message.text not in WISHLIST_PRIORITIES:
+        await message.answer("❌ Выберите приоритет из списка:")
+        return
+    
+    data = await state.get_data()
+    item_id = data.get('editing_item_id')
+    user_id = message.from_user.id
+    
+    success = await db.update_wishlist_item(item_id, user_id, priority=message.text)
+    
+    if success:
+        await message.answer("✅ Приоритет обновлен!", reply_markup=get_wishlist_submenu())
+        await state.clear()
+    else:
+        await message.answer("❌ Ошибка при обновлении", reply_markup=get_wishlist_submenu())
+
+@router.callback_query(F.data.startswith("editfield_photo_"))
+async def edit_wish_photo(callback: CallbackQuery, state: FSMContext):
+    """Начать редактирование фото"""
+    item_id = int(callback.data.split("_")[2])
+    await state.update_data(editing_item_id=item_id)
+    await state.set_state(EditWishlistStates.waiting_for_new_photo)
+    
+    await callback.message.edit_text(
+        "📸 <b>Отправьте новое фото товара</b>\n\n"
+        "Или отправьте текст 'удалить' чтобы удалить фото",
+        parse_mode=ParseMode.HTML
+    )
+    await callback.answer()
+
+@router.message(EditWishlistStates.waiting_for_new_photo)
+async def process_new_wish_photo(message: Message, state: FSMContext):
+    """Сохранить новое фото"""
+    data = await state.get_data()
+    item_id = data.get('editing_item_id')
+    user_id = message.from_user.id
+    
+    if message.text and message.text.lower() == 'удалить':
+        # Удаляем фото
+        success = await db.update_wishlist_item(item_id, user_id, photo_url=None)
+        if success:
+            await message.answer("✅ Фото удалено", reply_markup=get_wishlist_submenu())
+            await state.clear()
+        else:
+            await message.answer("❌ Ошибка при обновлении", reply_markup=get_wishlist_submenu())
+    elif message.photo:
+        # Обновляем фото
+        photo_url = message.photo[-1].file_id
+        success = await db.update_wishlist_item(item_id, user_id, photo_url=photo_url)
+        
+        if success:
+            await message.answer("✅ Фото обновлено!", reply_markup=get_wishlist_submenu())
+            await state.clear()
+        else:
+            await message.answer("❌ Ошибка при обновлении", reply_markup=get_wishlist_submenu())
+    else:
+        await message.answer("❌ Отправьте фото или текст 'удалить':")
+
+@router.callback_query(F.data.startswith("editfield_link_"))
+async def edit_wish_link(callback: CallbackQuery, state: FSMContext):
+    """Начать редактирование ссылки"""
+    item_id = int(callback.data.split("_")[2])
+    await state.update_data(editing_item_id=item_id)
+    await state.set_state(EditWishlistStates.waiting_for_new_link)
+    
+    await callback.message.edit_text(
+        "🔗 <b>Отправьте новую ссылку на товар</b>\n\n"
+        "Или отправьте текст 'удалить' чтобы удалить ссылку",
+        parse_mode=ParseMode.HTML
+    )
+    await callback.answer()
+
+@router.message(EditWishlistStates.waiting_for_new_link)
+async def process_new_wish_link(message: Message, state: FSMContext):
+    """Сохранить новую ссылку"""
+    data = await state.get_data()
+    item_id = data.get('editing_item_id')
+    user_id = message.from_user.id
+    
+    if message.text.lower() == 'удалить':
+        # Удаляем ссылку
+        link_value = None
+    else:
+        link_value = message.text
+    
+    success = await db.update_wishlist_item(item_id, user_id, link=link_value)
+    
+    if success:
+        if link_value:
+            await message.answer("✅ Ссылка обновлена!", reply_markup=get_wishlist_submenu())
+        else:
+            await message.answer("✅ Ссылка удалена", reply_markup=get_wishlist_submenu())
+        await state.clear()
+    else:
+        await message.answer("❌ Ошибка при обновлении", reply_markup=get_wishlist_submenu())
+
+# Фильтрация вишлиста
+
+@router.message(F.text == "🏷 Фильтры")
+async def show_wishlist_filters(message: Message):
+    """Показать фильтры вишлиста"""
+    keyboard = [
+        [InlineKeyboardButton(text="📏 По размеру покупки", callback_data="filter_by_size")],
+        [InlineKeyboardButton(text="🏷 По типу покупки", callback_data="filter_by_type")],
+        [InlineKeyboardButton(text="⭐️ По приоритету", callback_data="filter_by_priority")],
+        [InlineKeyboardButton(text="🔄 Показать всё", callback_data="filter_show_all")]
+    ]
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    
+    await message.answer(
+        "🏷 <b>Фильтры вишлиста</b>\n\n"
+        "Выберите, как отфильтровать ваш вишлист:",
+        reply_markup=markup,
+        parse_mode=ParseMode.HTML
+    )
+
+@router.callback_query(F.data == "filter_by_size")
+async def filter_by_size(callback: CallbackQuery):
+    """Фильтр по размеру покупки"""
+    keyboard = []
+    for cat in WISHLIST_SIZE_CATEGORIES:
+        keyboard.append([InlineKeyboardButton(text=cat, callback_data=f"filter_size_{cat}")])
+    keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_filters")])
+    
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    
+    await callback.message.edit_text(
+        "📏 <b>Выберите размер покупки:</b>",
+        reply_markup=markup,
+        parse_mode=ParseMode.HTML
+    )
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("filter_size_"))
+async def show_filtered_by_size(callback: CallbackQuery):
+    """Показать отфильтрованный вишлист по размеру"""
+    size = callback.data.replace("filter_size_", "")
+    user_id = callback.from_user.id
+    
+    items = await db.get_user_wishlist(user_id, size_category=size)
+    
+    if not items:
+        await callback.answer(f"Нет желаний в категории {size}", show_alert=True)
+        return
+    
+    text = f"🏷 <b>Вишлист: {size}</b>\n\n"
+    
+    for item in items:
+        text += f"• {item['name']}"
+        if item.get('price'):
+            text += f" — {item['price']:,.0f} ₽"
+        text += f"\n  {item['type_category']}"
+        if item.get('priority'):
+            text += f" | {item['priority']}"
+        text += "\n\n"
+    
+    text += f"📊 Всего: {len(items)}"
+    
+    keyboard = [[InlineKeyboardButton(text="◀️ Назад к фильтрам", callback_data="back_to_filters")]]
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    
+    await callback.message.edit_text(text, reply_markup=markup, parse_mode=ParseMode.HTML)
+    await callback.answer()
+
+@router.callback_query(F.data == "filter_by_type")
+async def filter_by_type(callback: CallbackQuery):
+    """Фильтр по типу покупки"""
+    keyboard = []
+    for cat in WISHLIST_TYPE_CATEGORIES:
+        keyboard.append([InlineKeyboardButton(text=cat, callback_data=f"filter_type_{cat}")])
+    keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_filters")])
+    
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    
+    await callback.message.edit_text(
+        "🏷 <b>Выберите тип покупки:</b>",
+        reply_markup=markup,
+        parse_mode=ParseMode.HTML
+    )
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("filter_type_"))
+async def show_filtered_by_type(callback: CallbackQuery):
+    """Показать отфильтрованный вишлист по типу"""
+    type_cat = callback.data.replace("filter_type_", "")
+    user_id = callback.from_user.id
+    
+    items = await db.get_user_wishlist(user_id)
+    # Фильтруем по типу
+    filtered_items = [item for item in items if item.get('type_category') == type_cat]
+    
+    if not filtered_items:
+        await callback.answer(f"Нет желаний типа {type_cat}", show_alert=True)
+        return
+    
+    text = f"🏷 <b>Вишлист: {type_cat}</b>\n\n"
+    
+    for item in filtered_items:
+        text += f"• {item['name']}"
+        if item.get('price'):
+            text += f" — {item['price']:,.0f} ₽"
+        text += f"\n  {item['size_category']}"
+        if item.get('priority'):
+            text += f" | {item['priority']}"
+        text += "\n\n"
+    
+    text += f"📊 Всего: {len(filtered_items)}"
+    
+    keyboard = [[InlineKeyboardButton(text="◀️ Назад к фильтрам", callback_data="back_to_filters")]]
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    
+    await callback.message.edit_text(text, reply_markup=markup, parse_mode=ParseMode.HTML)
+    await callback.answer()
+
+@router.callback_query(F.data == "filter_by_priority")
+async def filter_by_priority(callback: CallbackQuery):
+    """Фильтр по приоритету"""
+    keyboard = []
+    for priority in WISHLIST_PRIORITIES:
+        keyboard.append([InlineKeyboardButton(text=priority, callback_data=f"filter_priority_{priority}")])
+    keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_filters")])
+    
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    
+    await callback.message.edit_text(
+        "⭐️ <b>Выберите приоритет:</b>",
+        reply_markup=markup,
+        parse_mode=ParseMode.HTML
+    )
+    await callback.answer()
+
+@router.callback_query(F.data.startswith("filter_priority_"))
+async def show_filtered_by_priority(callback: CallbackQuery):
+    """Показать отфильтрованный вишлист по приоритету"""
+    priority = callback.data.replace("filter_priority_", "")
+    user_id = callback.from_user.id
+    
+    items = await db.get_user_wishlist(user_id, priority=priority)
+    
+    if not items:
+        await callback.answer(f"Нет желаний с приоритетом {priority}", show_alert=True)
+        return
+    
+    text = f"⭐️ <b>Вишлист: {priority}</b>\n\n"
+    
+    for item in items:
+        text += f"• {item['name']}"
+        if item.get('price'):
+            text += f" — {item['price']:,.0f} ₽"
+        text += f"\n  {item['type_category']} | {item['size_category']}"
+        text += "\n\n"
+    
+    text += f"📊 Всего: {len(items)}"
+    
+    keyboard = [[InlineKeyboardButton(text="◀️ Назад к фильтрам", callback_data="back_to_filters")]]
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    
+    await callback.message.edit_text(text, reply_markup=markup, parse_mode=ParseMode.HTML)
+    await callback.answer()
+
+@router.callback_query(F.data == "filter_show_all")
+async def show_all_wishlist(callback: CallbackQuery):
+    """Показать весь вишлист"""
+    user_id = callback.from_user.id
+    items = await db.get_user_wishlist(user_id)
+    
+    if not items:
+        await callback.message.edit_text("📋 Ваш вишлист пуст.")
+        return
+    
+    # Группируем по приоритетам
+    by_priority = {}
+    for item in items:
+        priority = item.get('priority', '💭 Когда-нибудь')
+        if priority not in by_priority:
+            by_priority[priority] = []
+        by_priority[priority].append(item)
+    
+    text = "🎁 <b>Весь вишлист:</b>\n\n"
+    
+    for priority in WISHLIST_PRIORITIES:
+        if priority in by_priority:
+            text += f"\n<b>{priority}</b>\n"
+            for item in by_priority[priority]:
+                text += f"• {item['name']}"
+                if item.get('price'):
+                    text += f" — {item['price']:,.0f} ₽"
+                text += f" ({item['type_category']})\n"
+    
+    text += f"\n📊 Всего желаний: {len(items)}"
+    
+    keyboard = [[InlineKeyboardButton(text="◀️ Назад к фильтрам", callback_data="back_to_filters")]]
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    
+    await callback.message.edit_text(text, reply_markup=markup, parse_mode=ParseMode.HTML)
+    await callback.answer()
+
+@router.callback_query(F.data == "back_to_filters")
+async def back_to_filters(callback: CallbackQuery):
+    """Вернуться к меню фильтров"""
+    keyboard = [
+        [InlineKeyboardButton(text="📏 По размеру покупки", callback_data="filter_by_size")],
+        [InlineKeyboardButton(text="🏷 По типу покупки", callback_data="filter_by_type")],
+        [InlineKeyboardButton(text="⭐️ По приоритету", callback_data="filter_by_priority")],
+        [InlineKeyboardButton(text="🔄 Показать всё", callback_data="filter_show_all")]
+    ]
+    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
+    
+    await callback.message.edit_text(
+        "🏷 <b>Фильтры вишлиста</b>\n\n"
+        "Выберите, как отфильтровать ваш вишлист:",
+        reply_markup=markup,
+        parse_mode=ParseMode.HTML
+    )
+    await callback.answer()
 
 def create_lockfile():
     """Создать файл блокировки"""

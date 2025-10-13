@@ -1117,4 +1117,41 @@ class Database:
         except Exception as e:
             logger.error(f"Ошибка при подсчёте вишлиста: {e}")
             return 0
+    
+    async def get_wishlist_item(self, item_id: int, user_id: int):
+        """Получить конкретный элемент вишлиста"""
+        try:
+            db = await self.connect()
+            async with db.execute(
+                'SELECT * FROM wishlist WHERE id = ? AND user_id = ?',
+                (item_id, user_id)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"Ошибка при получении элемента вишлиста: {e}")
+            return None
+    
+    async def update_wishlist_item(self, item_id: int, user_id: int, **kwargs):
+        """Обновить элемент вишлиста"""
+        try:
+            db = await self.connect()
+            # Формируем SET часть запроса только для переданных полей
+            set_parts = []
+            values = []
+            for key, value in kwargs.items():
+                set_parts.append(f"{key} = ?")
+                values.append(value)
+            
+            if not set_parts:
+                return False
+            
+            values.extend([item_id, user_id])
+            query = f"UPDATE wishlist SET {', '.join(set_parts)} WHERE id = ? AND user_id = ?"
+            await db.execute(query, values)
+            await db.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка при обновлении элемента вишлиста: {e}")
+            return False
 
