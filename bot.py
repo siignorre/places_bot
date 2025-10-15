@@ -5367,6 +5367,49 @@ async def shutdown(signal_name=None):
     # Удаляем lockfile
     remove_lockfile()
 
+# ===== ФОНОВЫЙ ПЛАНИРОВЩИК НАПОМИНАНИЙ =====
+
+async def check_and_send_reminders(bot: Bot):
+    """Фоновая задача для проверки и отправки напоминаний"""
+    while True:
+        try:
+            # Получаем напоминания, которые нужно отправить
+            due_reminders = await db.get_due_reminders()
+            
+            for reminder in due_reminders:
+                try:
+                    # Отправляем напоминание
+                    priority_emoji = {1: "🔴", 3: "🟡", 5: "🟢"}.get(reminder['priority'], "⚪")
+                    dt = datetime.fromisoformat(reminder['reminder_datetime'])
+                    formatted_datetime = dt.strftime("%d.%m.%Y в %H:%M")
+                    
+                    message_text = (
+                        f"🔔 <b>Напоминание</b>\n\n"
+                        f"{priority_emoji} <b>{formatted_datetime}</b>\n\n"
+                        f"📝 {reminder['note']}"
+                    )
+                    
+                    await bot.send_message(
+                        chat_id=reminder['user_id'],
+                        text=message_text,
+                        parse_mode=ParseMode.HTML
+                    )
+                    
+                    # Отмечаем как отправленное
+                    await db.mark_reminder_sent(reminder['id'])
+                    logger.info(f"Отправлено напоминание пользователю {reminder['user_id']}")
+                    
+                except Exception as e:
+                    logger.error(f"Ошибка при отправке напоминания {reminder['id']}: {e}")
+                    continue
+            
+            # Ждем минуту перед следующей проверкой
+            await asyncio.sleep(60)
+            
+        except Exception as e:
+            logger.error(f"Ошибка в планировщике напоминаний: {e}")
+            await asyncio.sleep(60)
+
 async def main():
     """Запуск бота"""
     # Создаем lockfile
@@ -5588,48 +5631,6 @@ async def main():
             parse_mode=ParseMode.HTML
         )
 
-    # ===== ФОНОВЫЙ ПЛАНИРОВЩИК НАПОМИНАНИЙ =====
-    
-    async def check_and_send_reminders(bot: Bot):
-        """Фоновая задача для проверки и отправки напоминаний"""
-        while True:
-            try:
-                # Получаем напоминания, которые нужно отправить
-                due_reminders = await db.get_due_reminders()
-                
-                for reminder in due_reminders:
-                    try:
-                        # Отправляем напоминание
-                        priority_emoji = {1: "🔴", 3: "🟡", 5: "🟢"}.get(reminder['priority'], "⚪")
-                        dt = datetime.fromisoformat(reminder['reminder_datetime'])
-                        formatted_datetime = dt.strftime("%d.%m.%Y в %H:%M")
-                        
-                        message_text = (
-                            f"🔔 <b>Напоминание</b>\n\n"
-                            f"{priority_emoji} <b>{formatted_datetime}</b>\n\n"
-                            f"📝 {reminder['note']}"
-                        )
-                        
-                        await bot.send_message(
-                            chat_id=reminder['user_id'],
-                            text=message_text,
-                            parse_mode=ParseMode.HTML
-                        )
-                        
-                        # Отмечаем как отправленное
-                        await db.mark_reminder_sent(reminder['id'])
-                        logger.info(f"Отправлено напоминание пользователю {reminder['user_id']}")
-                        
-                    except Exception as e:
-                        logger.error(f"Ошибка при отправке напоминания {reminder['id']}: {e}")
-                        continue
-                
-                # Ждем минуту перед следующей проверкой
-                await asyncio.sleep(60)
-                
-            except Exception as e:
-                logger.error(f"Ошибка в планировщике напоминаний: {e}")
-                await asyncio.sleep(60)
 
     logger.info("🚀 Бот запущен и готов к работе!")
     logger.info("⚡️ Кэширование включено (TTL: 10 минут)")
