@@ -309,6 +309,31 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_wishlist_priority ON wishlist(priority)
             ''')
             
+            # Таблица напоминаний
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS reminders (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    priority INTEGER NOT NULL,
+                    reminder_datetime TEXT NOT NULL,
+                    note TEXT NOT NULL,
+                    sent INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            await db.execute('''
+                CREATE INDEX IF NOT EXISTS idx_reminders_user_id ON reminders(user_id)
+            ''')
+            
+            await db.execute('''
+                CREATE INDEX IF NOT EXISTS idx_reminders_datetime ON reminders(reminder_datetime)
+            ''')
+            
+            await db.execute('''
+                CREATE INDEX IF NOT EXISTS idx_reminders_sent ON reminders(sent)
+            ''')
+            
             await db.commit()
             logger.info("База данных инициализирована")
         except Exception as e:
@@ -1153,5 +1178,102 @@ class Database:
             return True
         except Exception as e:
             logger.error(f"Ошибка при обновлении элемента вишлиста: {e}")
+            return False
+
+    # ===== НАПОМИНАНИЯ =====
+    
+    async def create_reminder(self, user_id: int, priority: int, reminder_datetime: str, note: str) -> bool:
+        """Создать новое напоминание"""
+        try:
+            db = await self.connect()
+            await db.execute(
+                "INSERT INTO reminders (user_id, priority, reminder_datetime, note, created_at) VALUES (?, ?, ?, ?, ?)",
+                (user_id, priority, reminder_datetime, note, datetime.now().isoformat())
+            )
+            await db.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка при создании напоминания: {e}")
+            return False
+
+    async def get_user_reminders(self, user_id: int) -> list:
+        """Получить все напоминания пользователя"""
+        try:
+            db = await self.connect()
+            cursor = await db.execute(
+                "SELECT * FROM reminders WHERE user_id = ? ORDER BY reminder_datetime ASC",
+                (user_id,)
+            )
+            reminders = await cursor.fetchall()
+            return [dict(reminder) for reminder in reminders]
+        except Exception as e:
+            logger.error(f"Ошибка при получении напоминаний: {e}")
+            return []
+
+    async def get_due_reminders(self) -> list:
+        """Получить напоминания, которые нужно отправить сейчас"""
+        try:
+            db = await self.connect()
+            now = datetime.now().isoformat()
+            cursor = await db.execute(
+                "SELECT * FROM reminders WHERE reminder_datetime <= ? AND sent = 0 ORDER BY priority ASC, reminder_datetime ASC",
+                (now,)
+            )
+            reminders = await cursor.fetchall()
+            return [dict(reminder) for reminder in reminders]
+        except Exception as e:
+            logger.error(f"Ошибка при получении просроченных напоминаний: {e}")
+            return []
+
+    async def mark_reminder_sent(self, reminder_id: int) -> bool:
+        """Отметить напоминание как отправленное"""
+        try:
+            db = await self.connect()
+            await db.execute(
+                "UPDATE reminders SET sent = 1 WHERE id = ?",
+                (reminder_id,)
+            )
+            await db.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка при отметке напоминания как отправленного: {e}")
+            return False
+
+    async def delete_reminder(self, reminder_id: int, user_id: int) -> bool:
+        """Удалить напоминание"""
+        try:
+            db = await self.connect()
+            await db.execute(
+                "DELETE FROM reminders WHERE id = ? AND user_id = ?",
+                (reminder_id, user_id)
+            )
+            await db.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка при удалении напоминания: {e}")
+            return False
+
+    async def update_reminder(self, reminder_id: int, user_id: int, **kwargs) -> bool:
+        """Обновить напоминание"""
+        try:
+            db = await self.connect()
+            set_parts = []
+            values = []
+            
+            for key, value in kwargs.items():
+                if key in ['priority', 'reminder_datetime', 'note']:
+                    set_parts.append(f"{key} = ?")
+                    values.append(value)
+            
+            if not set_parts:
+                return False
+                
+            values.extend([reminder_id, user_id])
+            query = f"UPDATE reminders SET {', '.join(set_parts)} WHERE id = ? AND user_id = ?"
+            await db.execute(query, values)
+            await db.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка при обновлении напоминания: {e}")
             return False
 

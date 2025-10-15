@@ -237,8 +237,45 @@ def get_main_menu():
             [KeyboardButton(text="👤 Личное")],
             [KeyboardButton(text="📚 Изучение"), KeyboardButton(text="💰 Финансы")],
             [KeyboardButton(text="📝 Быстрая заметка"), KeyboardButton(text="🎥 Видеография")],
+            [KeyboardButton(text="🔔 Напоминания")],
         ],
         resize_keyboard=True
+    )
+    return keyboard
+
+# Меню напоминаний
+def get_reminders_menu():
+    """Меню напоминаний"""
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="➕ Новое напоминание")],
+            [KeyboardButton(text="📋 Мои напоминания")],
+            [KeyboardButton(text="◀️ Назад")]
+        ],
+        resize_keyboard=True
+    )
+    return keyboard
+
+def get_priority_keyboard():
+    """Клавиатура выбора приоритета"""
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🔴 Высокий (1)"), KeyboardButton(text="🟡 Средний (3)")],
+            [KeyboardButton(text="🟢 Низкий (5)")],
+            [KeyboardButton(text="❌ Отмена")]
+        ],
+        resize_keyboard=True
+    )
+    return keyboard
+
+def get_reminder_actions_keyboard(reminder_id):
+    """Клавиатура действий с напоминанием"""
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"edit_reminder_{reminder_id}")],
+            [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"delete_reminder_{reminder_id}")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_reminders")]
+        ]
     )
     return keyboard
 
@@ -1954,6 +1991,14 @@ async def cancel_delete(callback: CallbackQuery):
 # Состояния для поиска
 class SearchStates(StatesGroup):
     waiting_for_query = State()
+
+# FSM состояния для напоминаний
+class ReminderStates(StatesGroup):
+    waiting_for_priority = State()
+    waiting_for_date = State()
+    waiting_for_time = State()
+    waiting_for_note = State()
+    editing_reminder = State()
 
 @router.message(F.text == "🔍 Поиск")
 async def search_start(message: Message, state: FSMContext):
@@ -5345,11 +5390,252 @@ async def main():
     # Подключение роутера
     dp.include_router(router)
     
+    # ===== ОБРАБОТЧИКИ НАПОМИНАНИЙ =====
+    
+    @router.message(F.text == "🔔 Напоминания")
+    async def show_reminders_menu(message: Message):
+        """Показать меню напоминаний"""
+        await message.answer(
+            "🔔 <b>Напоминания</b>\n\n"
+            "Выберите действие:",
+            reply_markup=get_reminders_menu(),
+            parse_mode=ParseMode.HTML
+        )
+    
+    @router.message(F.text == "➕ Новое напоминание")
+    async def start_new_reminder(message: Message, state: FSMContext):
+        """Начать создание нового напоминания"""
+        await state.clear()
+        await state.set_state(ReminderStates.waiting_for_priority)
+        await message.answer(
+            "🔔 <b>Создание напоминания</b>\n\n"
+            "Выберите приоритет:",
+            reply_markup=get_priority_keyboard(),
+            parse_mode=ParseMode.HTML
+        )
+    
+    @router.message(ReminderStates.waiting_for_priority)
+    async def process_priority(message: Message, state: FSMContext):
+        """Обработка выбора приоритета"""
+        if message.text == "❌ Отмена":
+            await state.clear()
+            await message.answer("Отменено", reply_markup=get_reminders_menu())
+            return
+        
+        priority_map = {
+            "🔴 Высокий (1)": 1,
+            "🟡 Средний (3)": 3,
+            "🟢 Низкий (5)": 5
+        }
+        
+        priority = priority_map.get(message.text)
+        if priority is None:
+            await message.answer("❌ Выберите приоритет из списка:")
+            return
+        
+        await state.update_data(priority=priority)
+        await state.set_state(ReminderStates.waiting_for_date)
+        await message.answer(
+            f"📅 <b>Дата напоминания</b>\n\n"
+            f"Приоритет: {message.text}\n\n"
+            f"Введите дату в формате ДД.ММ.ГГГГ\n"
+            f"Например: 25.12.2024",
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton(text="❌ Отмена")]],
+                resize_keyboard=True
+            ),
+            parse_mode=ParseMode.HTML
+        )
+    
+    @router.message(ReminderStates.waiting_for_date)
+    async def process_date(message: Message, state: FSMContext):
+        """Обработка даты"""
+        if message.text == "❌ Отмена":
+            await state.clear()
+            await message.answer("Отменено", reply_markup=get_reminders_menu())
+            return
+        
+        try:
+            # Парсим дату
+            day, month, year = message.text.split('.')
+            date_obj = datetime(int(year), int(month), int(day))
+            
+            # Проверяем, что дата не в прошлом
+            if date_obj.date() < datetime.now().date():
+                await message.answer("❌ Дата не может быть в прошлом. Введите корректную дату:")
+                return
+            
+            await state.update_data(date=message.text, date_obj=date_obj)
+            await state.set_state(ReminderStates.waiting_for_time)
+            await message.answer(
+                f"⏰ <b>Время напоминания</b>\n\n"
+                f"Дата: {message.text}\n\n"
+                f"Введите время в формате ЧЧ:ММ\n"
+                f"Например: 14:30",
+                reply_markup=ReplyKeyboardMarkup(
+                    keyboard=[[KeyboardButton(text="❌ Отмена")]],
+                    resize_keyboard=True
+                ),
+                parse_mode=ParseMode.HTML
+            )
+        except ValueError:
+            await message.answer("❌ Неверный формат даты. Введите дату в формате ДД.ММ.ГГГГ:")
+    
+    @router.message(ReminderStates.waiting_for_time)
+    async def process_time(message: Message, state: FSMContext):
+        """Обработка времени"""
+        if message.text == "❌ Отмена":
+            await state.clear()
+            await message.answer("Отменено", reply_markup=get_reminders_menu())
+            return
+        
+        try:
+            # Парсим время
+            hour, minute = message.text.split(':')
+            hour, minute = int(hour), int(minute)
+            
+            if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                raise ValueError("Неверное время")
+            
+            data = await state.get_data()
+            date_obj = data['date_obj']
+            reminder_datetime = date_obj.replace(hour=hour, minute=minute)
+            
+            # Проверяем, что время не в прошлом
+            if reminder_datetime < datetime.now():
+                await message.answer("❌ Время не может быть в прошлом. Введите корректное время:")
+                return
+            
+            await state.update_data(time=message.text, reminder_datetime=reminder_datetime.isoformat())
+            await state.set_state(ReminderStates.waiting_for_note)
+            await message.answer(
+                f"📝 <b>Заметка напоминания</b>\n\n"
+                f"Дата и время: {data['date']} в {message.text}\n\n"
+                f"Введите текст напоминания:",
+                reply_markup=ReplyKeyboardMarkup(
+                    keyboard=[[KeyboardButton(text="❌ Отмена")]],
+                    resize_keyboard=True
+                ),
+                parse_mode=ParseMode.HTML
+            )
+        except ValueError:
+            await message.answer("❌ Неверный формат времени. Введите время в формате ЧЧ:ММ:")
+    
+    @router.message(ReminderStates.waiting_for_note)
+    async def process_note(message: Message, state: FSMContext):
+        """Обработка заметки и создание напоминания"""
+        if message.text == "❌ Отмена":
+            await state.clear()
+            await message.answer("Отменено", reply_markup=get_reminders_menu())
+            return
+        
+        data = await state.get_data()
+        success = await db.create_reminder(
+            user_id=message.from_user.id,
+            priority=data['priority'],
+            reminder_datetime=data['reminder_datetime'],
+            note=message.text
+        )
+        
+        if success:
+            await message.answer(
+                f"✅ <b>Напоминание создано!</b>\n\n"
+                f"📅 Дата: {data['date']}\n"
+                f"⏰ Время: {data['time']}\n"
+                f"🔔 Приоритет: {data['priority']}\n"
+                f"📝 Заметка: {message.text}",
+                reply_markup=get_reminders_menu(),
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            await message.answer(
+                "❌ Ошибка при создании напоминания. Попробуйте еще раз.",
+                reply_markup=get_reminders_menu()
+            )
+        
+        await state.clear()
+    
+    @router.message(F.text == "📋 Мои напоминания")
+    async def show_my_reminders(message: Message):
+        """Показать напоминания пользователя"""
+        reminders = await db.get_user_reminders(message.from_user.id)
+        
+        if not reminders:
+            await message.answer(
+                "📋 <b>Мои напоминания</b>\n\n"
+                "У вас пока нет напоминаний.",
+                reply_markup=get_reminders_menu(),
+                parse_mode=ParseMode.HTML
+            )
+            return
+        
+        text = "📋 <b>Мои напоминания</b>\n\n"
+        for i, reminder in enumerate(reminders, 1):
+            priority_emoji = {1: "🔴", 3: "🟡", 5: "🟢"}.get(reminder['priority'], "⚪")
+            status = "✅ Отправлено" if reminder['sent'] else "⏳ Ожидает"
+            
+            # Форматируем дату и время
+            dt = datetime.fromisoformat(reminder['reminder_datetime'])
+            formatted_datetime = dt.strftime("%d.%m.%Y в %H:%M")
+            
+            text += f"{i}. {priority_emoji} <b>{formatted_datetime}</b>\n"
+            text += f"   📝 {reminder['note'][:50]}{'...' if len(reminder['note']) > 50 else ''}\n"
+            text += f"   {status}\n\n"
+        
+        await message.answer(
+            text,
+            reply_markup=get_reminders_menu(),
+            parse_mode=ParseMode.HTML
+        )
+
+    # ===== ФОНОВЫЙ ПЛАНИРОВЩИК НАПОМИНАНИЙ =====
+    
+    async def check_and_send_reminders(bot: Bot):
+        """Фоновая задача для проверки и отправки напоминаний"""
+        while True:
+            try:
+                # Получаем напоминания, которые нужно отправить
+                due_reminders = await db.get_due_reminders()
+                
+                for reminder in due_reminders:
+                    try:
+                        # Отправляем напоминание
+                        priority_emoji = {1: "🔴", 3: "🟡", 5: "🟢"}.get(reminder['priority'], "⚪")
+                        dt = datetime.fromisoformat(reminder['reminder_datetime'])
+                        formatted_datetime = dt.strftime("%d.%m.%Y в %H:%M")
+                        
+                        message_text = (
+                            f"🔔 <b>Напоминание</b>\n\n"
+                            f"{priority_emoji} <b>{formatted_datetime}</b>\n\n"
+                            f"📝 {reminder['note']}"
+                        )
+                        
+                        await bot.send_message(
+                            chat_id=reminder['user_id'],
+                            text=message_text,
+                            parse_mode=ParseMode.HTML
+                        )
+                        
+                        # Отмечаем как отправленное
+                        await db.mark_reminder_sent(reminder['id'])
+                        logger.info(f"Отправлено напоминание пользователю {reminder['user_id']}")
+                        
+                    except Exception as e:
+                        logger.error(f"Ошибка при отправке напоминания {reminder['id']}: {e}")
+                        continue
+                
+                # Ждем минуту перед следующей проверкой
+                await asyncio.sleep(60)
+                
+            except Exception as e:
+                logger.error(f"Ошибка в планировщике напоминаний: {e}")
+                await asyncio.sleep(60)
+
     logger.info("🚀 Бот запущен и готов к работе!")
     logger.info("⚡️ Кэширование включено (TTL: 10 минут)")
     logger.info("📄 Пагинация: {} мест на странице".format(PLACES_PER_PAGE))
     logger.info("🚄 Фоновая синхронизация с Google Sheets")
-    logger.info("🔔 Система напоминаний активирована (5-е и 25-е числа в 10:00)")
+    logger.info("🔔 Система напоминаний активирована")
     
     # Запускаем систему напоминаний в фоне
     asyncio.create_task(check_and_send_reminders(bot))
