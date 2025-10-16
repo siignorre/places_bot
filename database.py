@@ -318,6 +318,7 @@ class Database:
                     reminder_datetime TEXT NOT NULL,
                     note TEXT NOT NULL,
                     sent INTEGER DEFAULT 0,
+                    repeat_type TEXT DEFAULT 'none',
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             ''')
@@ -326,8 +327,57 @@ class Database:
                 CREATE INDEX IF NOT EXISTS idx_reminders_user_id ON reminders(user_id)
             ''')
             
+            # Миграция: добавляем поле repeat_type если его нет
+            try:
+                await db.execute('ALTER TABLE reminders ADD COLUMN repeat_type TEXT DEFAULT "none"')
+            except:
+                pass  # Поле уже существует
+            
             await db.execute('''
                 CREATE INDEX IF NOT EXISTS idx_reminders_datetime ON reminders(reminder_datetime)
+            ''')
+            
+            # Таблица кадров для видеографии
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS video_frames (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    title TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    instructions TEXT,
+                    duration INTEGER,
+                    order_index INTEGER DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            await db.execute('''
+                CREATE INDEX IF NOT EXISTS idx_video_frames_user_id ON video_frames(user_id)
+            ''')
+            
+            await db.execute('''
+                CREATE INDEX IF NOT EXISTS idx_video_frames_order ON video_frames(user_id, order_index)
+            ''')
+            
+            # Таблица идей
+            await db.execute('''
+                CREATE TABLE IF NOT EXISTS ideas (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    category TEXT NOT NULL,
+                    idea_text TEXT NOT NULL,
+                    songs TEXT,
+                    priority INTEGER DEFAULT 3,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            await db.execute('''
+                CREATE INDEX IF NOT EXISTS idx_ideas_user_id ON ideas(user_id)
+            ''')
+            
+            await db.execute('''
+                CREATE INDEX IF NOT EXISTS idx_ideas_priority ON ideas(user_id, priority)
             ''')
             
             await db.execute('''
@@ -1182,13 +1232,13 @@ class Database:
 
     # ===== НАПОМИНАНИЯ =====
     
-    async def create_reminder(self, user_id: int, priority: int, reminder_datetime: str, note: str) -> bool:
+    async def create_reminder(self, user_id: int, priority: int, reminder_datetime: str, note: str, repeat_type: str = 'none') -> bool:
         """Создать новое напоминание"""
         try:
             db = await self.connect()
             await db.execute(
-                "INSERT INTO reminders (user_id, priority, reminder_datetime, note, created_at) VALUES (?, ?, ?, ?, ?)",
-                (user_id, priority, reminder_datetime, note, datetime.now().isoformat())
+                "INSERT INTO reminders (user_id, priority, reminder_datetime, note, repeat_type, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (user_id, priority, reminder_datetime, note, repeat_type, datetime.now().isoformat())
             )
             await db.commit()
             return True
@@ -1214,13 +1264,54 @@ class Database:
         """Получить напоминания, которые нужно отправить сейчас"""
         try:
             db = await self.connect()
-            now = datetime.now().isoformat()
+            # Сравниваем по UTC времени
+            from datetime import timezone
+            now = datetime.now(timezone.utc).isoformat()
+            
+            # Получаем обычные напоминания (не повторяющиеся)
             cursor = await db.execute(
-                "SELECT * FROM reminders WHERE reminder_datetime <= ? AND sent = 0 ORDER BY priority ASC, reminder_datetime ASC",
+                "SELECT * FROM reminders WHERE reminder_datetime <= ? AND sent = 0 AND repeat_type = 'none' ORDER BY priority ASC, reminder_datetime ASC",
                 (now,)
             )
-            reminders = await cursor.fetchall()
-            return [dict(reminder) for reminder in reminders]
+            regular_reminders = await cursor.fetchall()
+            
+            # Получаем повторяющиеся напоминания (проверяем по времени без учета даты)
+            cursor = await db.execute(
+                "SELECT * FROM reminders WHERE repeat_type != 'none' ORDER BY priority ASC, reminder_datetime ASC"
+            )
+            recurring_reminders = await cursor.fetchall()
+            
+            # Фильтруем повторяющиеся напоминания по времени
+            filtered_recurring = []
+            now_utc = datetime.now(timezone.utc)
+            
+            for reminder in recurring_reminders:
+                reminder_dt = datetime.fromisoformat(reminder['reminder_datetime'])
+                if reminder_dt.tzinfo is None:
+                    reminder_dt = reminder_dt.replace(tzinfo=timezone.utc)
+                
+                reminder_time = reminder_dt.time()
+                now_time = now_utc.time()
+                
+                # Проверяем, подходит ли время (с точностью до минуты)
+                time_matches = (reminder_time.hour == now_time.hour and 
+                               reminder_time.minute == now_time.minute)
+                
+                if time_matches:
+                    repeat_type = reminder.get('repeat_type', 'none')
+                    
+                    if repeat_type == 'daily':
+                        # Ежедневные - отправляем каждый день
+                        filtered_recurring.append(reminder)
+                    elif repeat_type == 'weekly':
+                        # Еженедельные - отправляем в тот же день недели
+                        reminder_weekday = reminder_dt.weekday()
+                        now_weekday = now_utc.weekday()
+                        if reminder_weekday == now_weekday:
+                            filtered_recurring.append(reminder)
+            
+            all_reminders = list(regular_reminders) + filtered_recurring
+            return [dict(reminder) for reminder in all_reminders]
         except Exception as e:
             logger.error(f"Ошибка при получении просроченных напоминаний: {e}")
             return []
@@ -1275,5 +1366,177 @@ class Database:
             return True
         except Exception as e:
             logger.error(f"Ошибка при обновлении напоминания: {e}")
+            return False
+
+    # ===== КАДРЫ ДЛЯ ВИДЕОГРАФИИ =====
+    
+    async def create_video_frame(self, user_id: int, title: str, description: str, instructions: str = None, duration: int = None) -> int:
+        """Создать новый кадр"""
+        try:
+            db = await self.connect()
+            # Получаем следующий порядковый номер
+            cursor = await db.execute(
+                "SELECT MAX(order_index) FROM video_frames WHERE user_id = ?",
+                (user_id,)
+            )
+            max_order = await cursor.fetchone()
+            next_order = (max_order[0] or 0) + 1
+            
+            cursor = await db.execute(
+                "INSERT INTO video_frames (user_id, title, description, instructions, duration, order_index, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (user_id, title, description, instructions, duration, next_order, datetime.now().isoformat())
+            )
+            await db.commit()
+            return cursor.lastrowid
+        except Exception as e:
+            logger.error(f"Ошибка при создании кадра: {e}")
+            return None
+
+    async def get_user_video_frames(self, user_id: int) -> list:
+        """Получить все кадры пользователя"""
+        try:
+            db = await self.connect()
+            cursor = await db.execute(
+                "SELECT * FROM video_frames WHERE user_id = ? ORDER BY order_index ASC",
+                (user_id,)
+            )
+            frames = await cursor.fetchall()
+            return [dict(frame) for frame in frames]
+        except Exception as e:
+            logger.error(f"Ошибка при получении кадров: {e}")
+            return []
+
+    async def get_video_frame(self, frame_id: int, user_id: int) -> dict:
+        """Получить кадр по ID"""
+        try:
+            db = await self.connect()
+            cursor = await db.execute(
+                "SELECT * FROM video_frames WHERE id = ? AND user_id = ?",
+                (frame_id, user_id)
+            )
+            frame = await cursor.fetchone()
+            return dict(frame) if frame else None
+        except Exception as e:
+            logger.error(f"Ошибка при получении кадра: {e}")
+            return None
+
+    async def update_video_frame(self, frame_id: int, user_id: int, **kwargs) -> bool:
+        """Обновить кадр"""
+        try:
+            db = await self.connect()
+            set_parts = []
+            values = []
+            
+            for key, value in kwargs.items():
+                if key in ['title', 'description', 'instructions', 'duration', 'order_index']:
+                    set_parts.append(f"{key} = ?")
+                    values.append(value)
+            
+            if not set_parts:
+                return False
+                
+            values.extend([frame_id, user_id])
+            query = f"UPDATE video_frames SET {', '.join(set_parts)} WHERE id = ? AND user_id = ?"
+            await db.execute(query, values)
+            await db.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка при обновлении кадра: {e}")
+            return False
+
+    async def delete_video_frame(self, frame_id: int, user_id: int) -> bool:
+        """Удалить кадр"""
+        try:
+            db = await self.connect()
+            await db.execute(
+                "DELETE FROM video_frames WHERE id = ? AND user_id = ?",
+                (frame_id, user_id)
+            )
+            await db.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка при удалении кадра: {e}")
+            return False
+
+    # ===== ИДЕИ =====
+    
+    async def create_idea(self, user_id: int, category: str, idea_text: str, songs: str = None, priority: int = 3) -> int:
+        """Создать новую идею"""
+        try:
+            db = await self.connect()
+            cursor = await db.execute(
+                "INSERT INTO ideas (user_id, category, idea_text, songs, priority, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (user_id, category, idea_text, songs, priority, datetime.now().isoformat())
+            )
+            await db.commit()
+            return cursor.lastrowid
+        except Exception as e:
+            logger.error(f"Ошибка при создании идеи: {e}")
+            return None
+
+    async def get_user_ideas(self, user_id: int) -> list:
+        """Получить все идеи пользователя"""
+        try:
+            db = await self.connect()
+            cursor = await db.execute(
+                "SELECT * FROM ideas WHERE user_id = ? ORDER BY priority ASC, created_at DESC",
+                (user_id,)
+            )
+            ideas = await cursor.fetchall()
+            return [dict(idea) for idea in ideas]
+        except Exception as e:
+            logger.error(f"Ошибка при получении идей: {e}")
+            return []
+
+    async def get_idea(self, idea_id: int, user_id: int) -> dict:
+        """Получить идею по ID"""
+        try:
+            db = await self.connect()
+            cursor = await db.execute(
+                "SELECT * FROM ideas WHERE id = ? AND user_id = ?",
+                (idea_id, user_id)
+            )
+            idea = await cursor.fetchone()
+            return dict(idea) if idea else None
+        except Exception as e:
+            logger.error(f"Ошибка при получении идеи: {e}")
+            return None
+
+    async def update_idea(self, idea_id: int, user_id: int, **kwargs) -> bool:
+        """Обновить идею"""
+        try:
+            db = await self.connect()
+            set_parts = []
+            values = []
+            
+            for key, value in kwargs.items():
+                if key in ['category', 'idea_text', 'songs', 'priority']:
+                    set_parts.append(f"{key} = ?")
+                    values.append(value)
+            
+            if not set_parts:
+                return False
+                
+            values.extend([idea_id, user_id])
+            query = f"UPDATE ideas SET {', '.join(set_parts)} WHERE id = ? AND user_id = ?"
+            await db.execute(query, values)
+            await db.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка при обновлении идеи: {e}")
+            return False
+
+    async def delete_idea(self, idea_id: int, user_id: int) -> bool:
+        """Удалить идею"""
+        try:
+            db = await self.connect()
+            await db.execute(
+                "DELETE FROM ideas WHERE id = ? AND user_id = ?",
+                (idea_id, user_id)
+            )
+            await db.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Ошибка при удалении идеи: {e}")
             return False
 

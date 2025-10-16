@@ -8,7 +8,8 @@ import warnings
 import urllib.parse
 from os import getenv
 from dotenv import load_dotenv
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Dict, Any
 
@@ -237,7 +238,7 @@ def get_main_menu():
             [KeyboardButton(text="👤 Личное")],
             [KeyboardButton(text="📚 Изучение"), KeyboardButton(text="💰 Финансы")],
             [KeyboardButton(text="📝 Быстрая заметка"), KeyboardButton(text="🎥 Видеография")],
-            [KeyboardButton(text="🔔 Напоминания")],
+            [KeyboardButton(text="💡 Идеи"), KeyboardButton(text="🔔 Напоминания")],
         ],
         resize_keyboard=True
     )
@@ -250,6 +251,7 @@ def get_reminders_menu():
         keyboard=[
             [KeyboardButton(text="➕ Новое напоминание")],
             [KeyboardButton(text="📋 Мои напоминания")],
+            [KeyboardButton(text="▶️ Отправить напоминания сейчас")],
             [KeyboardButton(text="◀️ Назад")]
         ],
         resize_keyboard=True
@@ -262,6 +264,66 @@ def get_priority_keyboard():
         keyboard=[
             [KeyboardButton(text="🔴 Высокий (1)"), KeyboardButton(text="🟡 Средний (3)")],
             [KeyboardButton(text="🟢 Низкий (5)")],
+            [KeyboardButton(text="❌ Отмена")]
+        ],
+        resize_keyboard=True
+    )
+    return keyboard
+
+def get_repeat_type_keyboard():
+    """Клавиатура выбора типа повторения"""
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📅 Одноразовое")],
+            [KeyboardButton(text="🔄 Ежедневно")],
+            [KeyboardButton(text="📆 Еженедельно")],
+            [KeyboardButton(text="❌ Отмена")]
+        ],
+        resize_keyboard=True
+    )
+    return keyboard
+
+def get_video_frames_menu():
+    """Меню кадров видеографии"""
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="➕ Добавить новый кадр")],
+            [KeyboardButton(text="📋 Посмотреть мои кадры")],
+            [KeyboardButton(text="◀️ Назад")]
+        ],
+        resize_keyboard=True
+    )
+    return keyboard
+
+def get_video_frame_actions_keyboard(frame_id):
+    """Клавиатура действий с кадром"""
+    keyboard = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✏️ Редактировать", callback_data=f"edit_frame_{frame_id}")],
+            [InlineKeyboardButton(text="🗑 Удалить", callback_data=f"delete_frame_{frame_id}")],
+            [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_frames")]
+        ]
+    )
+    return keyboard
+
+def get_ideas_menu():
+    """Меню идей"""
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="➕ Новая идея")],
+            [KeyboardButton(text="📋 Мои идеи")],
+            [KeyboardButton(text="◀️ Назад")]
+        ],
+        resize_keyboard=True
+    )
+    return keyboard
+
+def get_idea_category_keyboard():
+    """Клавиатура выбора категории идеи"""
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="💬 Разговорное")],
+            [KeyboardButton(text="🎬 Киношное")],
             [KeyboardButton(text="❌ Отмена")]
         ],
         resize_keyboard=True
@@ -338,6 +400,7 @@ def get_media_submenu():
             [KeyboardButton(text="🎬 Фильмы")],
             [KeyboardButton(text="📺 Сериалы")],
             [KeyboardButton(text="🎙 Подкасты")],
+            [KeyboardButton(text="🎥 Кадр")],
             [KeyboardButton(text="◀️ К изучению")],
         ],
         resize_keyboard=True
@@ -421,7 +484,7 @@ def get_wishlist_submenu():
     keyboard = ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="➕ Добавить желание")],
-            [KeyboardButton(text="📋 Мой вишлист"), KeyboardButton(text="🏷 Фильтры")],
+            [KeyboardButton(text="📋 Мой вишлист")],
             [KeyboardButton(text="✏️ Редактировать желания")],
             [KeyboardButton(text="◀️ К личному")],
         ],
@@ -913,6 +976,15 @@ async def process_note_text(message: Message, state: FSMContext):
             'text': text
         }
         await asyncio.to_thread(google_sheets.add_note, user_id, user_name, note_data)
+        
+        # Если это идея, также сохраняем в таблицу идей
+        if category == "Идея":
+            await db.create_idea(
+                user_id=user_id,
+                category="Разговорное",  # По умолчанию разговорное
+                idea_text=text,
+                priority=3  # Средний приоритет
+            )
         
         await message.answer(
             f"✅ Заметка сохранена!\n\n"
@@ -1995,10 +2067,26 @@ class SearchStates(StatesGroup):
 # FSM состояния для напоминаний
 class ReminderStates(StatesGroup):
     waiting_for_priority = State()
+    waiting_for_repeat_type = State()
     waiting_for_date = State()
     waiting_for_time = State()
     waiting_for_note = State()
     editing_reminder = State()
+
+# FSM состояния для кадров видеографии
+class VideoFrameStates(StatesGroup):
+    waiting_for_title = State()
+    waiting_for_description = State()
+    waiting_for_instructions = State()
+    waiting_for_duration = State()
+    editing_frame = State()
+
+# FSM состояния для идей
+class IdeaStates(StatesGroup):
+    waiting_for_category = State()
+    waiting_for_idea_text = State()
+    waiting_for_songs = State()
+    editing_idea = State()
 
 @router.message(F.text == "🔍 Поиск")
 async def search_start(message: Message, state: FSMContext):
@@ -4571,7 +4659,7 @@ async def process_wishlist_link(message: Message, state: FSMContext):
 
 @router.message(F.text == "📋 Мой вишлист")
 async def show_my_wishlist(message: Message):
-    """Показать вишлист"""
+    """Показать кнопки категорий вишлиста"""
     user_id = message.from_user.id
     
     items = await db.get_user_wishlist(user_id)
@@ -4584,28 +4672,49 @@ async def show_my_wishlist(message: Message):
         )
         return
     
-    # Группируем по приоритетам
-    by_priority = {}
+    # Группируем по категориям
+    by_category = {}
     for item in items:
-        priority = item.get('priority', '💭 Когда-нибудь')
-        if priority not in by_priority:
-            by_priority[priority] = []
-        by_priority[priority].append(item)
+        category = item.get('type_category', 'Другое')
+        if category not in by_category:
+            by_category[category] = []
+        by_category[category].append(item)
     
-    text = "🎁 <b>Ваш вишлист:</b>\n\n"
+    # Создаем кнопки для категорий
+    keyboard = []
+    category_order = ['Техника', 'Одежда', 'Для дома', 'Для себя']
     
-    for priority in WISHLIST_PRIORITIES:
-        if priority in by_priority:
-            text += f"\n<b>{priority}</b>\n"
-            for item in by_priority[priority]:
-                text += f"• {item['name']}"
-                if item.get('price'):
-                    text += f" — {item['price']:,.0f} ₽"
-                text += f" ({item['type_category']})\n"
+    # Добавляем основные категории
+    for category in category_order:
+        if category in by_category:
+            count = len(by_category[category])
+            keyboard.append([InlineKeyboardButton(
+                text=f"📱 {category} ({count})",
+                callback_data=f"wishlist_category_{category}"
+            )])
     
-    text += f"\n📊 Всего желаний: {len(items)}"
+    # Добавляем остальные категории
+    for category, items_in_category in by_category.items():
+        if category not in category_order:
+            count = len(items_in_category)
+            keyboard.append([InlineKeyboardButton(
+                text=f"📦 {category} ({count})",
+                callback_data=f"wishlist_category_{category}"
+            )])
     
-    await message.answer(text, reply_markup=get_wishlist_submenu(), parse_mode=ParseMode.HTML)
+    # Добавляем кнопку "Показать все"
+    keyboard.append([InlineKeyboardButton(
+        text="🔄 Показать все",
+        callback_data="wishlist_show_all"
+    )])
+    
+    text = f"🎁 <b>Выберите категорию вишлиста:</b>\n\n📊 Всего желаний: {len(items)}"
+    
+    await message.answer(
+        text,
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+        parse_mode=ParseMode.HTML
+    )
 
 @router.message(F.text == "✏️ Редактировать желания")
 async def edit_wishlist_start(message: Message):
@@ -5049,204 +5158,322 @@ async def process_new_wish_link(message: Message, state: FSMContext):
 
 # Фильтрация вишлиста
 
-@router.message(F.text == "🏷 Фильтры")
-async def show_wishlist_filters(message: Message):
-    """Показать фильтры вишлиста (категории как в меню добавления)"""
-    keyboard = []
-    # Категории по типу покупки
-    for cat in WISHLIST_TYPE_CATEGORIES:
-        keyboard.append([InlineKeyboardButton(text=cat, callback_data=f"filter_type_{cat}")])
-    # Категории по размеру покупки
-    for cat in WISHLIST_SIZE_CATEGORIES:
-        keyboard.append([InlineKeyboardButton(text=cat, callback_data=f"filter_size_{cat}")])
-    keyboard.append([InlineKeyboardButton(text="🔄 Показать всё", callback_data="filter_show_all")])
-    
-    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    await message.answer(
-        "Выберите категорию вишлиста:",
-        reply_markup=markup
-    )
 
-@router.callback_query(F.data == "back_to_filters")
-async def back_to_filters(callback: CallbackQuery):
-    """Вернуться к меню фильтров (категории)"""
-    keyboard = []
-    for cat in WISHLIST_TYPE_CATEGORIES:
-        keyboard.append([InlineKeyboardButton(text=cat, callback_data=f"filter_type_{cat}")])
-    for cat in WISHLIST_SIZE_CATEGORIES:
-        keyboard.append([InlineKeyboardButton(text=cat, callback_data=f"filter_size_{cat}")])
-    keyboard.append([InlineKeyboardButton(text="🔄 Показать всё", callback_data="filter_show_all")])
-    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    await callback.message.edit_text("Выберите категорию вишлиста:", reply_markup=markup)
-    await callback.answer()
 
-@router.callback_query(F.data.startswith("filter_size_"))
-async def show_filtered_by_size(callback: CallbackQuery):
-    """Показать отфильтрованный вишлист по размеру"""
-    size = callback.data.replace("filter_size_", "")
-    user_id = callback.from_user.id
-    
-    items = await db.get_user_wishlist(user_id, size_category=size)
-    
-    if not items:
-        await callback.answer(f"Нет желаний в категории {size}", show_alert=True)
-        return
-    
-    text = f"🏷 <b>Вишлист: {size}</b>\n\n"
-    
-    for item in items:
-        text += f"• {item['name']}"
-        if item.get('price'):
-            text += f" — {item['price']:,.0f} ₽"
-        text += f"\n  {item['type_category']}"
-        if item.get('priority'):
-            text += f" | {item['priority']}"
-        text += "\n\n"
-    
-    text += f"📊 Всего: {len(items)}"
-    
-    keyboard = [[InlineKeyboardButton(text="◀️ Назад к фильтрам", callback_data="back_to_filters")]]
-    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    
-    await callback.message.edit_text(text, reply_markup=markup, parse_mode=ParseMode.HTML)
-    await callback.answer()
 
-# Удаляем промежуточное меню типов/размеров — фильтрация сразу по категориям
+    # ===== CALLBACK ОБРАБОТЧИКИ ДЛЯ КАДРОВ =====
+    
+    @router.callback_query(F.data.startswith("edit_frame_"))
+    async def edit_frame_callback(callback: CallbackQuery, state: FSMContext):
+        """Редактировать кадр"""
+        frame_id = int(callback.data.split("_")[2])
+        user_id = callback.from_user.id
+        
+        frame = await db.get_video_frame(frame_id, user_id)
+        if not frame:
+            await callback.answer("❌ Кадр не найден", show_alert=True)
+            return
+        
+        await state.update_data(frame_id=frame_id)
+        await state.set_state(VideoFrameStates.editing_frame)
+        
+        await callback.message.edit_text(
+            f"✏️ <b>Редактирование кадра</b>\n\n"
+            f"🎬 <b>Название:</b> {frame['title']}\n"
+            f"📝 <b>Описание:</b> {frame['description']}\n"
+            f"📋 <b>Инструкции:</b> {frame['instructions']}\n\n"
+            f"Выберите, что хотите изменить:",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="✏️ Название", callback_data=f"edit_frame_title_{frame_id}")],
+                    [InlineKeyboardButton(text="📝 Описание", callback_data=f"edit_frame_desc_{frame_id}")],
+                    [InlineKeyboardButton(text="📋 Инструкции", callback_data=f"edit_frame_instr_{frame_id}")],
+                    [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_frames")]
+                ]
+            ),
+            parse_mode=ParseMode.HTML
+        )
+        await callback.answer()
+    
+    @router.callback_query(F.data.startswith("delete_frame_"))
+    async def delete_frame_callback(callback: CallbackQuery):
+        """Удалить кадр"""
+        frame_id = int(callback.data.split("_")[2])
+        user_id = callback.from_user.id
+        
+        success = await db.delete_video_frame(frame_id, user_id)
+        if success:
+            await callback.message.edit_text(
+                "✅ <b>Кадр удален</b>\n\n"
+                "Кадр успешно удален из вашей коллекции.",
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(text="◀️ Назад к кадрам", callback_data="back_to_frames")]
+                    ]
+                ),
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            await callback.answer("❌ Ошибка при удалении кадра", show_alert=True)
+        await callback.answer()
+    
+    @router.callback_query(F.data == "back_to_frames")
+    async def back_to_frames_callback(callback: CallbackQuery, state: FSMContext):
+        """Вернуться к списку кадров"""
+        await state.clear()
+        user_id = callback.from_user.id
+        frames = await db.get_user_video_frames(user_id)
+        
+        if not frames:
+            await callback.message.edit_text(
+                "📋 <b>Мои кадры</b>\n\n"
+                "У вас пока нет кадров. Создайте первый кадр!",
+                reply_markup=InlineKeyboardMarkup(
+                    inline_keyboard=[
+                        [InlineKeyboardButton(text="➕ Добавить кадр", callback_data="add_new_frame")],
+                        [InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_media")]
+                    ]
+                ),
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            text = "📋 <b>Мои кадры</b>\n\n"
+            keyboard = []
+            
+            for i, frame in enumerate(frames, 1):
+                text += f"{i}. 🎬 <b>{frame['title']}</b>\n"
+                text += f"   📝 {frame['description'][:50]}{'...' if len(frame['description']) > 50 else ''}\n\n"
+                
+                keyboard.append([InlineKeyboardButton(
+                    text=f"🎬 {frame['title'][:30]}{'...' if len(frame['title']) > 30 else ''}",
+                    callback_data=f"view_frame_{frame['id']}"
+                )])
+            
+            keyboard.append([InlineKeyboardButton(text="➕ Добавить кадр", callback_data="add_new_frame")])
+            keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_media")])
+            
+            await callback.message.edit_text(
+                text,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+                parse_mode=ParseMode.HTML
+            )
+        await callback.answer()
+    
+    @router.callback_query(F.data.startswith("view_frame_"))
+    async def view_frame_callback(callback: CallbackQuery):
+        """Просмотр отдельного кадра"""
+        frame_id = int(callback.data.split("_")[2])
+        user_id = callback.from_user.id
+        
+        frame = await db.get_video_frame(frame_id, user_id)
+        if not frame:
+            await callback.answer("❌ Кадр не найден", show_alert=True)
+            return
+        
+        await callback.message.edit_text(
+            f"🎬 <b>{frame['title']}</b>\n\n"
+            f"📝 <b>Описание:</b>\n{frame['description']}\n\n"
+            f"📋 <b>Инструкции по съемке:</b>\n{frame['instructions']}",
+            reply_markup=get_video_frame_actions_keyboard(frame_id),
+            parse_mode=ParseMode.HTML
+        )
+        await callback.answer()
+    
+    @router.callback_query(F.data == "add_new_frame")
+    async def add_new_frame_callback(callback: CallbackQuery, state: FSMContext):
+        """Добавить новый кадр через callback"""
+        await state.set_state(VideoFrameStates.waiting_for_title)
+        await callback.message.edit_text(
+            "🎬 <b>Новый кадр</b>\n\n"
+            "Введите название кадра:\n"
+            "Например: 'Крупный план рук', 'Общий план интерьера'",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="❌ Отмена", callback_data="back_to_frames")]
+                ]
+            ),
+            parse_mode=ParseMode.HTML
+        )
+        await callback.answer()
+    
+    @router.callback_query(F.data == "back_to_media")
+    async def back_to_media_callback(callback: CallbackQuery):
+        """Вернуться к меню медиа"""
+        await callback.message.edit_text(
+            "🎬 <b>Медиа</b>\n\n"
+            "Выберите категорию:",
+            reply_markup=InlineKeyboardMarkup(
+                inline_keyboard=[
+                    [InlineKeyboardButton(text="🎬 Фильмы", callback_data="show_movies")],
+                    [InlineKeyboardButton(text="📺 Сериалы", callback_data="show_series")],
+                    [InlineKeyboardButton(text="🎙 Подкасты", callback_data="show_podcasts")],
+                    [InlineKeyboardButton(text="🎥 Кадр", callback_data="show_frames")]
+                ]
+            ),
+            parse_mode=ParseMode.HTML
+        )
+        await callback.answer()
 
-@router.callback_query(F.data.startswith("filter_type_"))
-async def show_filtered_by_type(callback: CallbackQuery):
-    """Показать отфильтрованный вишлист по типу"""
-    type_cat = callback.data.replace("filter_type_", "")
-    user_id = callback.from_user.id
+    # ===== CALLBACK ОБРАБОТЧИКИ ДЛЯ КАТЕГОРИЙ ВИШЛИСТА =====
     
-    items = await db.get_user_wishlist(user_id)
-    # Фильтруем по типу
-    filtered_items = [item for item in items if item.get('type_category') == type_cat]
+    @router.callback_query(F.data.startswith("wishlist_category_"))
+    async def show_wishlist_category(callback: CallbackQuery):
+        """Показать товары выбранной категории"""
+        category = callback.data.replace("wishlist_category_", "")
+        user_id = callback.from_user.id
+        
+        items = await db.get_user_wishlist(user_id)
+        category_items = [item for item in items if item.get('type_category') == category]
+        
+        if not category_items:
+            await callback.answer(f"В категории «{category}» пока нет товаров", show_alert=True)
+            return
+        
+        # Сортируем по цене (от меньшей к большей)
+        category_items.sort(key=lambda x: x.get('price', 0) or 0)
+        
+        text = f"📱 <b>{category}</b> ({len(category_items)} шт.)\n\n"
+        
+        for i, item in enumerate(category_items, 1):
+            text += f"{i}. {item['name']}"
+            if item.get('price'):
+                text += f" — {item['price']:,.0f} ₽"
+            text += f"\n   {item['size_category']}"
+            if item.get('priority'):
+                text += f" | {item['priority']}"
+            text += "\n\n"
+        
+        keyboard = [
+            [InlineKeyboardButton(text="◀️ Назад к категориям", callback_data="wishlist_back_to_categories")]
+        ]
+        
+        await callback.message.edit_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+            parse_mode=ParseMode.HTML
+        )
+        await callback.answer()
     
-    if not filtered_items:
-        await callback.answer(f"Нет желаний типа {type_cat}", show_alert=True)
-        return
+    @router.callback_query(F.data == "wishlist_show_all")
+    async def show_all_wishlist_items(callback: CallbackQuery):
+        """Показать все товары вишлиста"""
+        user_id = callback.from_user.id
+        items = await db.get_user_wishlist(user_id)
+        
+        if not items:
+            await callback.answer("Ваш вишлист пуст", show_alert=True)
+            return
+        
+        # Группируем по категориям
+        by_category = {}
+        for item in items:
+            category = item.get('type_category', 'Другое')
+            if category not in by_category:
+                by_category[category] = []
+            by_category[category].append(item)
+        
+        # Сортируем каждую категорию по цене
+        for category in by_category:
+            by_category[category].sort(key=lambda x: x.get('price', 0) or 0)
+        
+        text = "🎁 <b>Весь вишлист:</b>\n\n"
+        
+        # Показываем категории в порядке: техника, одежда, для дома, для себя
+        category_order = ['Техника', 'Одежда', 'Для дома', 'Для себя']
+        
+        for category in category_order:
+            if category in by_category:
+                items_in_category = by_category[category]
+                text += f"📱 <b>{category}</b> ({len(items_in_category)} шт.)\n"
+                for item in items_in_category:
+                    text += f"• {item['name']}"
+                    if item.get('price'):
+                        text += f" — {item['price']:,.0f} ₽"
+                    text += "\n"
+                text += "\n"
+        
+        # Показываем остальные категории
+        for category, items_in_category in by_category.items():
+            if category not in category_order:
+                text += f"📦 <b>{category}</b> ({len(items_in_category)} шт.)\n"
+                for item in items_in_category:
+                    text += f"• {item['name']}"
+                    if item.get('price'):
+                        text += f" — {item['price']:,.0f} ₽"
+                    text += "\n"
+                text += "\n"
+        
+        text += f"📊 Всего желаний: {len(items)}"
+        
+        keyboard = [
+            [InlineKeyboardButton(text="◀️ Назад к категориям", callback_data="wishlist_back_to_categories")]
+        ]
+        
+        await callback.message.edit_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+            parse_mode=ParseMode.HTML
+        )
+        await callback.answer()
     
-    text = f"🏷 <b>Вишлист: {type_cat}</b>\n\n"
-    
-    for item in filtered_items:
-        text += f"• {item['name']}"
-        if item.get('price'):
-            text += f" — {item['price']:,.0f} ₽"
-        text += f"\n  {item['size_category']}"
-        if item.get('priority'):
-            text += f" | {item['priority']}"
-        text += "\n\n"
-    
-    text += f"📊 Всего: {len(filtered_items)}"
-    
-    keyboard = [[InlineKeyboardButton(text="◀️ Назад к фильтрам", callback_data="back_to_filters")]]
-    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    
-    await callback.message.edit_text(text, reply_markup=markup, parse_mode=ParseMode.HTML)
-    await callback.answer()
-
-@router.callback_query(F.data == "filter_by_priority")
-async def filter_by_priority(callback: CallbackQuery):
-    """Фильтр по приоритету"""
-    keyboard = []
-    for priority in WISHLIST_PRIORITIES:
-        keyboard.append([InlineKeyboardButton(text=priority, callback_data=f"filter_priority_{priority}")])
-    keyboard.append([InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_filters")])
-    
-    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    
-    await callback.message.edit_text(
-        "⭐️ <b>Выберите приоритет:</b>",
-        reply_markup=markup,
-        parse_mode=ParseMode.HTML
-    )
-    await callback.answer()
-
-@router.callback_query(F.data.startswith("filter_priority_"))
-async def show_filtered_by_priority(callback: CallbackQuery):
-    """Показать отфильтрованный вишлист по приоритету"""
-    priority = callback.data.replace("filter_priority_", "")
-    user_id = callback.from_user.id
-    
-    items = await db.get_user_wishlist(user_id, priority=priority)
-    
-    if not items:
-        await callback.answer(f"Нет желаний с приоритетом {priority}", show_alert=True)
-        return
-    
-    text = f"⭐️ <b>Вишлист: {priority}</b>\n\n"
-    
-    for item in items:
-        text += f"• {item['name']}"
-        if item.get('price'):
-            text += f" — {item['price']:,.0f} ₽"
-        text += f"\n  {item['type_category']} | {item['size_category']}"
-        text += "\n\n"
-    
-    text += f"📊 Всего: {len(items)}"
-    
-    keyboard = [[InlineKeyboardButton(text="◀️ Назад к фильтрам", callback_data="back_to_filters")]]
-    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    
-    await callback.message.edit_text(text, reply_markup=markup, parse_mode=ParseMode.HTML)
-    await callback.answer()
-
-@router.callback_query(F.data == "filter_show_all")
-async def show_all_wishlist(callback: CallbackQuery):
-    """Показать весь вишлист"""
-    user_id = callback.from_user.id
-    items = await db.get_user_wishlist(user_id)
-    
-    if not items:
-        await callback.message.edit_text("📋 Ваш вишлист пуст.")
-        return
-    
-    # Группируем по приоритетам
-    by_priority = {}
-    for item in items:
-        priority = item.get('priority', '💭 Когда-нибудь')
-        if priority not in by_priority:
-            by_priority[priority] = []
-        by_priority[priority].append(item)
-    
-    text = "🎁 <b>Весь вишлист:</b>\n\n"
-    
-    for priority in WISHLIST_PRIORITIES:
-        if priority in by_priority:
-            text += f"\n<b>{priority}</b>\n"
-            for item in by_priority[priority]:
-                text += f"• {item['name']}"
-                if item.get('price'):
-                    text += f" — {item['price']:,.0f} ₽"
-                text += f" ({item['type_category']})\n"
-    
-    text += f"\n📊 Всего желаний: {len(items)}"
-    
-    keyboard = [[InlineKeyboardButton(text="◀️ Назад к фильтрам", callback_data="back_to_filters")]]
-    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    
-    await callback.message.edit_text(text, reply_markup=markup, parse_mode=ParseMode.HTML)
-    await callback.answer()
-
-@router.callback_query(F.data == "back_to_filters")
-async def back_to_filters(callback: CallbackQuery):
-    """Вернуться к меню фильтров"""
-    keyboard = [
-        [InlineKeyboardButton(text="📏 По размеру покупки", callback_data="filter_by_size")],
-        [InlineKeyboardButton(text="🏷 По типу покупки", callback_data="filter_by_type")],
-        [InlineKeyboardButton(text="⭐️ По приоритету", callback_data="filter_by_priority")],
-        [InlineKeyboardButton(text="🔄 Показать всё", callback_data="filter_show_all")]
-    ]
-    markup = InlineKeyboardMarkup(inline_keyboard=keyboard)
-    
-    await callback.message.edit_text(
-        "🏷 <b>Фильтры вишлиста</b>\n\n"
-        "Выберите, как отфильтровать ваш вишлист:",
-        reply_markup=markup,
-        parse_mode=ParseMode.HTML
-    )
-    await callback.answer()
+    @router.callback_query(F.data == "wishlist_back_to_categories")
+    async def back_to_wishlist_categories(callback: CallbackQuery):
+        """Вернуться к выбору категорий вишлиста"""
+        user_id = callback.from_user.id
+        items = await db.get_user_wishlist(user_id)
+        
+        if not items:
+            await callback.message.edit_text(
+                "📋 Ваш вишлист пуст.\n\n"
+                "Добавьте первое желание через «➕ Добавить желание»"
+            )
+            await callback.answer()
+            return
+        
+        # Группируем по категориям
+        by_category = {}
+        for item in items:
+            category = item.get('type_category', 'Другое')
+            if category not in by_category:
+                by_category[category] = []
+            by_category[category].append(item)
+        
+        # Создаем кнопки для категорий
+        keyboard = []
+        category_order = ['Техника', 'Одежда', 'Для дома', 'Для себя']
+        
+        # Добавляем основные категории
+        for category in category_order:
+            if category in by_category:
+                count = len(by_category[category])
+                keyboard.append([InlineKeyboardButton(
+                    text=f"📱 {category} ({count})",
+                    callback_data=f"wishlist_category_{category}"
+                )])
+        
+        # Добавляем остальные категории
+        for category, items_in_category in by_category.items():
+            if category not in category_order:
+                count = len(items_in_category)
+                keyboard.append([InlineKeyboardButton(
+                    text=f"📦 {category} ({count})",
+                    callback_data=f"wishlist_category_{category}"
+                )])
+        
+        # Добавляем кнопку "Показать все"
+        keyboard.append([InlineKeyboardButton(
+            text="🔄 Показать все",
+            callback_data="wishlist_show_all"
+        )])
+        
+        text = f"🎁 <b>Выберите категорию вишлиста:</b>\n\n📊 Всего желаний: {len(items)}"
+        
+        await callback.message.edit_text(
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+            parse_mode=ParseMode.HTML
+        )
+        await callback.answer()
 
 def create_lockfile():
     """Создать файл блокировки"""
@@ -5299,58 +5526,6 @@ async def send_period_reminder(bot: Bot, user_id: int, start_date: str, end_date
         logger.error(f"Ошибка при отправке напоминания: {e}")
 
 
-async def check_and_send_reminders(bot: Bot):
-    """Проверка и отправка напоминаний"""
-    while True:
-        try:
-            now = datetime.now()
-            
-            # Проверяем время: 10:00 утра
-            if now.hour == 10 and now.minute == 0:
-                day = now.day
-                
-                # 5-го числа: период 15-31 предыдущего месяца
-                if day == 5:
-                    if now.month == 1:
-                        prev_month = 12
-                        prev_year = now.year - 1
-                    else:
-                        prev_month = now.month - 1
-                        prev_year = now.year
-                    
-                    # Последний день предыдущего месяца
-                    if prev_month in [1, 3, 5, 7, 8, 10, 12]:
-                        last_day = 31
-                    elif prev_month in [4, 6, 9, 11]:
-                        last_day = 30
-                    else:
-                        last_day = 29 if prev_year % 4 == 0 and (prev_year % 100 != 0 or prev_year % 400 == 0) else 28
-                    
-                    start_date = f"15.{prev_month:02d}.{prev_year}"
-                    end_date = f"{last_day}.{prev_month:02d}.{prev_year}"
-                    period_name = f"15-{last_day} {['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'][prev_month-1]}"
-                    
-                    users = await db.get_all_users()
-                    for user_id in users:
-                        await send_period_reminder(bot, user_id, start_date, end_date, period_name)
-                
-                # 25-го числа: период 1-15 текущего месяца
-                elif day == 25:
-                    start_date = f"01.{now.month:02d}.{now.year}"
-                    end_date = f"15.{now.month:02d}.{now.year}"
-                    period_name = f"1-15 {['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'][now.month-1]}"
-                    
-                    users = await db.get_all_users()
-                    for user_id in users:
-                        await send_period_reminder(bot, user_id, start_date, end_date, period_name)
-                
-                await asyncio.sleep(60)  # Спим минуту после отправки
-            else:
-                await asyncio.sleep(60)  # Проверяем каждую минуту
-                
-        except Exception as e:
-            logger.error(f"Ошибка в системе напоминаний: {e}")
-            await asyncio.sleep(60)
 
 
 async def shutdown(signal_name=None):
@@ -5376,12 +5551,24 @@ async def check_and_send_reminders(bot: Bot):
             # Получаем напоминания, которые нужно отправить
             due_reminders = await db.get_due_reminders()
             
+            # Отладочная информация
+            now_utc = datetime.now(timezone.utc)
+            now_msk = now_utc.astimezone(ZoneInfo('Europe/Moscow'))
+            logger.info(f"Проверка напоминаний: UTC={now_utc.strftime('%H:%M')}, МСК={now_msk.strftime('%H:%M')}, найдено={len(due_reminders)}")
+            
             for reminder in due_reminders:
                 try:
                     # Отправляем напоминание
                     priority_emoji = {1: "🔴", 3: "🟡", 5: "🟢"}.get(reminder['priority'], "⚪")
-                    dt = datetime.fromisoformat(reminder['reminder_datetime'])
-                    formatted_datetime = dt.strftime("%d.%m.%Y в %H:%M")
+                    
+                    # Храним UTC, отправляем, показывая время в Мск
+                    dt_utc = datetime.fromisoformat(reminder['reminder_datetime'])
+                    if dt_utc.tzinfo is None:
+                        dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+                    dt_msk = dt_utc.astimezone(ZoneInfo('Europe/Moscow'))
+                    formatted_datetime = dt_msk.strftime("%d.%m.%Y в %H:%M (Мск)")
+                    
+                    logger.info(f"Отправляем напоминание: UTC={dt_utc.strftime('%H:%M')}, МСК={dt_msk.strftime('%H:%M')}")
                     
                     message_text = (
                         f"🔔 <b>Напоминание</b>\n\n"
@@ -5395,9 +5582,12 @@ async def check_and_send_reminders(bot: Bot):
                         parse_mode=ParseMode.HTML
                     )
                     
-                    # Отмечаем как отправленное
-                    await db.mark_reminder_sent(reminder['id'])
-                    logger.info(f"Отправлено напоминание пользователю {reminder['user_id']}")
+                    # Отмечаем как отправленное только для одноразовых напоминаний
+                    if reminder.get('repeat_type', 'none') == 'none':
+                        await db.mark_reminder_sent(reminder['id'])
+                        logger.info(f"Отправлено одноразовое напоминание пользователю {reminder['user_id']}")
+                    else:
+                        logger.info(f"Отправлено повторяющееся напоминание пользователю {reminder['user_id']}")
                     
                 except Exception as e:
                     logger.error(f"Ошибка при отправке напоминания {reminder['id']}: {e}")
@@ -5477,18 +5667,62 @@ async def main():
             return
         
         await state.update_data(priority=priority)
-        await state.set_state(ReminderStates.waiting_for_date)
+        await state.set_state(ReminderStates.waiting_for_repeat_type)
         await message.answer(
-            f"📅 <b>Дата напоминания</b>\n\n"
+            f"🔄 <b>Тип повторения</b>\n\n"
             f"Приоритет: {message.text}\n\n"
-            f"Введите дату в формате ДД.ММ.ГГГГ\n"
-            f"Например: 25.12.2024",
-            reply_markup=ReplyKeyboardMarkup(
-                keyboard=[[KeyboardButton(text="❌ Отмена")]],
-                resize_keyboard=True
-            ),
+            f"Выберите тип повторения:",
+            reply_markup=get_repeat_type_keyboard(),
             parse_mode=ParseMode.HTML
         )
+    
+    @router.message(ReminderStates.waiting_for_repeat_type)
+    async def process_repeat_type(message: Message, state: FSMContext):
+        """Обработка выбора типа повторения"""
+        if message.text == "❌ Отмена":
+            await state.clear()
+            await message.answer("Отменено", reply_markup=get_reminders_menu())
+            return
+        
+        repeat_type_map = {
+            "📅 Одноразовое": "none",
+            "🔄 Ежедневно": "daily",
+            "📆 Еженедельно": "weekly"
+        }
+        
+        repeat_type = repeat_type_map.get(message.text)
+        if repeat_type is None:
+            await message.answer("❌ Выберите тип повторения из списка:")
+            return
+        
+        await state.update_data(repeat_type=repeat_type)
+        await state.set_state(ReminderStates.waiting_for_date)
+        
+        # Для повторяющихся напоминаний показываем другое сообщение
+        if repeat_type == "none":
+            await message.answer(
+                f"📅 <b>Дата напоминания</b>\n\n"
+                f"Тип: {message.text}\n\n"
+                f"Введите дату в формате ДД.ММ.ГГГГ\n"
+                f"Например: 25.12.2024",
+                reply_markup=ReplyKeyboardMarkup(
+                    keyboard=[[KeyboardButton(text="❌ Отмена")]],
+                    resize_keyboard=True
+                ),
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            await message.answer(
+                f"📅 <b>Дата напоминания</b>\n\n"
+                f"Тип: {message.text}\n\n"
+                f"Введите дату в формате ДД.ММ.ГГГГ для первого напоминания\n"
+                f"Например: 25.12.2024",
+                reply_markup=ReplyKeyboardMarkup(
+                    keyboard=[[KeyboardButton(text="❌ Отмена")]],
+                    resize_keyboard=True
+                ),
+                parse_mode=ParseMode.HTML
+            )
     
     @router.message(ReminderStates.waiting_for_date)
     async def process_date(message: Message, state: FSMContext):
@@ -5499,12 +5733,13 @@ async def main():
             return
         
         try:
-            # Парсим дату
+            # Парсим дату в часовом поясе Москвы
             day, month, year = message.text.split('.')
-            date_obj = datetime(int(year), int(month), int(day))
+            moscow = ZoneInfo('Europe/Moscow')
+            date_obj = datetime(int(year), int(month), int(day), tzinfo=moscow)
             
-            # Проверяем, что дата не в прошлом
-            if date_obj.date() < datetime.now().date():
+            # Проверяем, что дата не в прошлом относительно Мск
+            if date_obj.date() < datetime.now(tz=moscow).date():
                 await message.answer("❌ Дата не может быть в прошлом. Введите корректную дату:")
                 return
             
@@ -5541,15 +5776,20 @@ async def main():
                 raise ValueError("Неверное время")
             
             data = await state.get_data()
-            date_obj = data['date_obj']
-            reminder_datetime = date_obj.replace(hour=hour, minute=minute)
+            date_obj = data['date_obj']  # tz-aware Europe/Moscow
+            reminder_dt_msk = date_obj.replace(hour=hour, minute=minute)
             
-            # Проверяем, что время не в прошлом
-            if reminder_datetime < datetime.now():
+            moscow = ZoneInfo('Europe/Moscow')
+            now_msk = datetime.now(tz=moscow)
+            
+            # Проверяем, что время не в прошлом в Мск
+            if reminder_dt_msk < now_msk:
                 await message.answer("❌ Время не может быть в прошлом. Введите корректное время:")
                 return
             
-            await state.update_data(time=message.text, reminder_datetime=reminder_datetime.isoformat())
+            # Сохраняем в БД в UTC
+            reminder_dt_utc = reminder_dt_msk.astimezone(timezone.utc)
+            await state.update_data(time=message.text, reminder_datetime=reminder_dt_utc.isoformat())
             await state.set_state(ReminderStates.waiting_for_note)
             await message.answer(
                 f"📝 <b>Заметка напоминания</b>\n\n"
@@ -5573,19 +5813,29 @@ async def main():
             return
         
         data = await state.get_data()
+        repeat_type = data.get('repeat_type', 'none')
+        
         success = await db.create_reminder(
             user_id=message.from_user.id,
             priority=data['priority'],
             reminder_datetime=data['reminder_datetime'],
-            note=message.text
+            note=message.text,
+            repeat_type=repeat_type
         )
         
         if success:
+            repeat_text = {
+                'none': '📅 Одноразовое',
+                'daily': '🔄 Ежедневно',
+                'weekly': '📆 Еженедельно'
+            }.get(repeat_type, '📅 Одноразовое')
+            
             await message.answer(
                 f"✅ <b>Напоминание создано!</b>\n\n"
-                f"📅 Дата: {data['date']}\n"
-                f"⏰ Время: {data['time']}\n"
+                f"📅 Дата (Мск): {data['date']}\n"
+                f"⏰ Время (Мск): {data['time']}\n"
                 f"🔔 Приоритет: {data['priority']}\n"
+                f"🔄 Повторение: {repeat_text}\n"
                 f"📝 Заметка: {message.text}",
                 reply_markup=get_reminders_menu(),
                 parse_mode=ParseMode.HTML
@@ -5617,11 +5867,26 @@ async def main():
             priority_emoji = {1: "🔴", 3: "🟡", 5: "🟢"}.get(reminder['priority'], "⚪")
             status = "✅ Отправлено" if reminder['sent'] else "⏳ Ожидает"
             
-            # Форматируем дату и время
-            dt = datetime.fromisoformat(reminder['reminder_datetime'])
-            formatted_datetime = dt.strftime("%d.%m.%Y в %H:%M")
+            # Тип повторения
+            repeat_type = reminder.get('repeat_type', 'none')
+            repeat_emoji = {
+                'none': '📅',
+                'daily': '🔄',
+                'weekly': '📆'
+            }.get(repeat_type, '📅')
             
-            text += f"{i}. {priority_emoji} <b>{formatted_datetime}</b>\n"
+            # Форматируем дату и время (в Мск)
+            dt_utc = datetime.fromisoformat(reminder['reminder_datetime'])
+            if dt_utc.tzinfo is None:
+                dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+            dt_msk = dt_utc.astimezone(ZoneInfo('Europe/Moscow'))
+            
+            if repeat_type == 'none':
+                formatted_datetime = dt_msk.strftime("%d.%m.%Y в %H:%M (Мск)")
+            else:
+                formatted_datetime = f"каждый день в {dt_msk.strftime('%H:%M')}" if repeat_type == 'daily' else f"каждую неделю в {dt_msk.strftime('%H:%M')}"
+            
+            text += f"{i}. {priority_emoji} {repeat_emoji} <b>{formatted_datetime}</b>\n"
             text += f"   📝 {reminder['note'][:50]}{'...' if len(reminder['note']) > 50 else ''}\n"
             text += f"   {status}\n\n"
         
@@ -5631,12 +5896,340 @@ async def main():
             parse_mode=ParseMode.HTML
         )
 
+    @router.message(F.text == "▶️ Отправить напоминания сейчас")
+    async def trigger_due_reminders(message: Message):
+        """Ручной запуск отправки просроченных напоминаний"""
+        try:
+            due_before = await db.get_due_reminders()
+            sent_count = 0
+            for reminder in due_before:
+                try:
+                    dt_utc = datetime.fromisoformat(reminder['reminder_datetime'])
+                    if dt_utc.tzinfo is None:
+                        dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+                    dt_msk = dt_utc.astimezone(ZoneInfo('Europe/Moscow'))
+                    formatted_datetime = dt_msk.strftime("%d.%m.%Y в %H:%M (Мск)")
+                    priority_emoji = {1: "🔴", 3: "🟡", 5: "🟢"}.get(reminder['priority'], "⚪")
+                    
+                    await message.bot.send_message(
+                        chat_id=reminder['user_id'],
+                        text=(
+                            "🔔 <b>Напоминание</b>\n\n"
+                            f"{priority_emoji} <b>{formatted_datetime}</b>\n\n"
+                            f"📝 {reminder['note']}"
+                        ),
+                        parse_mode=ParseMode.HTML
+                    )
+                    await db.mark_reminder_sent(reminder['id'])
+                    sent_count += 1
+                except Exception as e:
+                    logger.error(f"Ошибка ручной отправки напоминания {reminder['id']}: {e}")
+            await message.answer(f"✅ Отправлено: {sent_count}. Ожидает: {max(0, len(due_before)-sent_count)}", reply_markup=get_reminders_menu())
+        except Exception as e:
+            logger.error(f"Ошибка ручного запуска напоминаний: {e}")
+            await message.answer("❌ Ошибка при отправке. Проверьте логи.", reply_markup=get_reminders_menu())
+
+    # ===== ОБРАБОТЧИКИ КАДРОВ ВИДЕОГРАФИИ =====
+    
+    @router.message(F.text == "🎥 Кадр")
+    async def show_video_frames_menu(message: Message):
+        """Показать меню кадров видеографии"""
+        await message.answer(
+            "🎥 <b>Кадры видеографии</b>\n\n"
+            "Здесь вы можете создавать и управлять кадрами для ваших видео.\n"
+            "Каждый кадр содержит описание и инструкции по съемке.",
+            reply_markup=get_video_frames_menu(),
+            parse_mode=ParseMode.HTML
+        )
+    
+    @router.message(F.text == "➕ Добавить новый кадр")
+    async def start_new_frame(message: Message, state: FSMContext):
+        """Начать создание нового кадра"""
+        await state.set_state(VideoFrameStates.waiting_for_title)
+        await message.answer(
+            "🎬 <b>Новый кадр</b>\n\n"
+            "Введите название кадра:\n"
+            "Например: 'Крупный план рук', 'Общий план интерьера'",
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton(text="❌ Отмена")]],
+                resize_keyboard=True
+            ),
+            parse_mode=ParseMode.HTML
+        )
+    
+    @router.message(VideoFrameStates.waiting_for_title)
+    async def process_frame_title(message: Message, state: FSMContext):
+        """Обработка названия кадра"""
+        if message.text == "❌ Отмена":
+            await state.clear()
+            await message.answer("Отменено", reply_markup=get_video_frames_menu())
+            return
+        
+        await state.update_data(title=message.text)
+        await state.set_state(VideoFrameStates.waiting_for_description)
+        await message.answer(
+            f"📝 <b>Описание кадра</b>\n\n"
+            f"Название: {message.text}\n\n"
+            f"Опишите, что должно быть в кадре:\n"
+            f"Например: 'Руки на клавиатуре, крупный план, фокус на пальцах'",
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton(text="❌ Отмена")]],
+                resize_keyboard=True
+            ),
+            parse_mode=ParseMode.HTML
+        )
+    
+    @router.message(VideoFrameStates.waiting_for_description)
+    async def process_frame_description(message: Message, state: FSMContext):
+        """Обработка описания кадра"""
+        if message.text == "❌ Отмена":
+            await state.clear()
+            await message.answer("Отменено", reply_markup=get_video_frames_menu())
+            return
+        
+        await state.update_data(description=message.text)
+        await state.set_state(VideoFrameStates.waiting_for_instructions)
+        await message.answer(
+            f"📋 <b>Инструкции по съемке</b>\n\n"
+            f"Опишите, как снимать этот кадр:\n"
+            f"• Настройки камеры\n"
+            f"• Ракурс и композиция\n"
+            f"• Освещение\n"
+            f"• Движения камеры\n\n"
+            f"Например: 'Камера на штативе, высота 1.5м, фокусное расстояние 50мм, статичный кадр'",
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton(text="❌ Отмена")]],
+                resize_keyboard=True
+            ),
+            parse_mode=ParseMode.HTML
+        )
+    
+    @router.message(VideoFrameStates.waiting_for_instructions)
+    async def process_frame_instructions(message: Message, state: FSMContext):
+        """Обработка инструкций и создание кадра"""
+        if message.text == "❌ Отмена":
+            await state.clear()
+            await message.answer("Отменено", reply_markup=get_video_frames_menu())
+            return
+        
+        data = await state.get_data()
+        frame_id = await db.create_video_frame(
+            user_id=message.from_user.id,
+            title=data['title'],
+            description=data['description'],
+            instructions=message.text
+        )
+        
+        if frame_id:
+            await message.answer(
+                f"✅ <b>Кадр создан!</b>\n\n"
+                f"🎬 <b>Название:</b> {data['title']}\n"
+                f"📝 <b>Описание:</b> {data['description']}\n"
+                f"📋 <b>Инструкции:</b> {message.text}",
+                reply_markup=get_video_frames_menu(),
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            await message.answer(
+                "❌ Ошибка при создании кадра. Попробуйте еще раз.",
+                reply_markup=get_video_frames_menu()
+            )
+        
+        await state.clear()
+    
+    @router.message(F.text == "📋 Посмотреть мои кадры")
+    async def show_my_frames(message: Message):
+        """Показать кадры пользователя"""
+        frames = await db.get_user_video_frames(message.from_user.id)
+        
+        if not frames:
+            await message.answer(
+                "📋 <b>Мои кадры</b>\n\n"
+                "У вас пока нет кадров. Создайте первый кадр!",
+                reply_markup=get_video_frames_menu(),
+                parse_mode=ParseMode.HTML
+            )
+            return
+        
+        text = "📋 <b>Мои кадры</b>\n\n"
+        keyboard = []
+        
+        for i, frame in enumerate(frames, 1):
+            text += f"{i}. 🎬 <b>{frame['title']}</b>\n"
+            text += f"   📝 {frame['description'][:50]}{'...' if len(frame['description']) > 50 else ''}\n\n"
+            
+            keyboard.append([InlineKeyboardButton(
+                text=f"🎬 {frame['title'][:30]}{'...' if len(frame['title']) > 30 else ''}",
+                callback_data=f"view_frame_{frame['id']}"
+            )])
+        
+        keyboard.append([InlineKeyboardButton(text="➕ Добавить кадр", callback_data="add_new_frame")])
+        
+        await message.answer(
+            text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
+            parse_mode=ParseMode.HTML
+        )
+
+    # ===== ОБРАБОТЧИКИ ИДЕЙ =====
+    
+    @router.message(F.text == "💡 Идеи")
+    async def show_ideas_menu(message: Message):
+        """Показать меню идей"""
+        await message.answer(
+            "💡 <b>Идеи</b>\n\n"
+            "Здесь вы можете сохранять и управлять своими идеями для контента.\n"
+            "Быстрые заметки автоматически попадают в идеи.",
+            reply_markup=get_ideas_menu(),
+            parse_mode=ParseMode.HTML
+        )
+    
+    @router.message(F.text == "➕ Новая идея")
+    async def start_new_idea(message: Message, state: FSMContext):
+        """Начать создание новой идеи"""
+        await state.set_state(IdeaStates.waiting_for_category)
+        await message.answer(
+            "💡 <b>Новая идея</b>\n\n"
+            "Выберите категорию идеи:",
+            reply_markup=get_idea_category_keyboard(),
+            parse_mode=ParseMode.HTML
+        )
+    
+    @router.message(IdeaStates.waiting_for_category)
+    async def process_idea_category(message: Message, state: FSMContext):
+        """Обработка выбора категории идеи"""
+        if message.text == "❌ Отмена":
+            await state.clear()
+            await message.answer("Отменено", reply_markup=get_ideas_menu())
+            return
+        
+        category_map = {
+            "💬 Разговорное": "Разговорное",
+            "🎬 Киношное": "Киношное"
+        }
+        
+        category = category_map.get(message.text)
+        if category is None:
+            await message.answer("❌ Выберите категорию из списка:")
+            return
+        
+        await state.update_data(category=category)
+        await state.set_state(IdeaStates.waiting_for_idea_text)
+        await message.answer(
+            f"💡 <b>Краткая идея</b>\n\n"
+            f"Категория: {message.text}\n\n"
+            f"Опишите кратко, о чем будет ваша идея:",
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard=[[KeyboardButton(text="❌ Отмена")]],
+                resize_keyboard=True
+            ),
+            parse_mode=ParseMode.HTML
+        )
+    
+    @router.message(IdeaStates.waiting_for_idea_text)
+    async def process_idea_text(message: Message, state: FSMContext):
+        """Обработка текста идеи"""
+        if message.text == "❌ Отмена":
+            await state.clear()
+            await message.answer("Отменено", reply_markup=get_ideas_menu())
+            return
+        
+        await state.update_data(idea_text=message.text)
+        await state.set_state(IdeaStates.waiting_for_songs)
+        await message.answer(
+            f"🎵 <b>Песни для идеи</b>\n\n"
+            f"Идея: {message.text}\n\n"
+            f"Напишите несколько песен, под которые можно снять эту идею\n"
+            f"(или нажмите 'Пропустить', если не нужно):",
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard=[
+                    [KeyboardButton(text="⏭ Пропустить")],
+                    [KeyboardButton(text="❌ Отмена")]
+                ],
+                resize_keyboard=True
+            ),
+            parse_mode=ParseMode.HTML
+        )
+    
+    @router.message(IdeaStates.waiting_for_songs)
+    async def process_idea_songs(message: Message, state: FSMContext):
+        """Обработка песен и создание идеи"""
+        if message.text == "❌ Отмена":
+            await state.clear()
+            await message.answer("Отменено", reply_markup=get_ideas_menu())
+            return
+        
+        data = await state.get_data()
+        songs = None if message.text == "⏭ Пропустить" else message.text
+        
+        idea_id = await db.create_idea(
+            user_id=message.from_user.id,
+            category=data['category'],
+            idea_text=data['idea_text'],
+            songs=songs
+        )
+        
+        if idea_id:
+            await message.answer(
+                f"✅ <b>Идея создана!</b>\n\n"
+                f"💡 <b>Категория:</b> {data['category']}\n"
+                f"📝 <b>Идея:</b> {data['idea_text']}\n"
+                f"🎵 <b>Песни:</b> {songs if songs else 'Не указаны'}",
+                reply_markup=get_ideas_menu(),
+                parse_mode=ParseMode.HTML
+            )
+        else:
+            await message.answer(
+                "❌ Ошибка при создании идеи. Попробуйте еще раз.",
+                reply_markup=get_ideas_menu()
+            )
+        
+        await state.clear()
+    
+    @router.message(F.text == "📋 Мои идеи")
+    async def show_my_ideas(message: Message):
+        """Показать идеи пользователя"""
+        ideas = await db.get_user_ideas(message.from_user.id)
+        
+        if not ideas:
+            await message.answer(
+                "📋 <b>Мои идеи</b>\n\n"
+                "У вас пока нет идей. Создайте первую идею!",
+                reply_markup=get_ideas_menu(),
+                parse_mode=ParseMode.HTML
+            )
+            return
+        
+        text = "📋 <b>Мои идеи</b>\n\n"
+        
+        # Группируем по приоритету
+        by_priority = {1: [], 3: [], 5: []}
+        for idea in ideas:
+            priority = idea.get('priority', 3)
+            if priority in by_priority:
+                by_priority[priority].append(idea)
+        
+        priority_names = {1: "🔴 Высокий", 3: "🟡 Средний", 5: "🟢 Низкий"}
+        
+        for priority in [1, 3, 5]:
+            if by_priority[priority]:
+                text += f"\n{priority_names[priority]}:\n"
+                for idea in by_priority[priority]:
+                    text += f"• {idea['idea_text'][:60]}{'...' if len(idea['idea_text']) > 60 else ''}\n"
+                    text += f"  {idea['category']}\n\n"
+        
+        await message.answer(
+            text,
+            reply_markup=get_ideas_menu(),
+            parse_mode=ParseMode.HTML
+        )
 
     logger.info("🚀 Бот запущен и готов к работе!")
     logger.info("⚡️ Кэширование включено (TTL: 10 минут)")
     logger.info("📄 Пагинация: {} мест на странице".format(PLACES_PER_PAGE))
     logger.info("🚄 Фоновая синхронизация с Google Sheets")
     logger.info("🔔 Система напоминаний активирована")
+    logger.info("💡 Система идей активирована")
     
     # Запускаем систему напоминаний в фоне
     asyncio.create_task(check_and_send_reminders(bot))
